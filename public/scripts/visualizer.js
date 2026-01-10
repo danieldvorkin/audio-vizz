@@ -5,6 +5,8 @@ let audioCtx = null;
 let analyser = null;
 let source = null;
 let analysisRunId = 0;
+let backgroundAnalysisRunId = 0;
+let referenceIndex = -1;
 
 // Elements
 const uploadArea = document.getElementById('uploadArea');
@@ -25,6 +27,12 @@ const rolloffEl = document.getElementById('rolloff');
 const flatnessEl = document.getElementById('flatness');
 const zcrEl = document.getElementById('zcr');
 const bpmEl = document.getElementById('bpm');
+const referenceNameEl = document.getElementById('referenceName');
+const bpmDeltaEl = document.getElementById('bpmDelta');
+const loudnessDeltaEl = document.getElementById('loudnessDelta');
+const crestDeltaEl = document.getElementById('crestDelta');
+const brightnessDeltaEl = document.getElementById('brightnessDelta');
+const rolloffDeltaEl = document.getElementById('rolloffDelta');
 const brightnessSummaryEl = document.getElementById('brightnessSummary');
 const tonalSummaryEl = document.getElementById('tonalSummary');
 const dynamicsSummaryEl = document.getElementById('dynamicsSummary');
@@ -108,6 +116,79 @@ const describeDynamics = (crestDb, loudness) => {
 };
 
 const average = (arr) => (arr && arr.length ? arr.reduce((sum, value) => sum + value, 0) / arr.length : null);
+
+const formatSigned = (value, formatter, unitSuffix = '') => {
+  if (!Number.isFinite(value)) return '--';
+  const sign = value > 0 ? '+' : (value < 0 ? '−' : '±');
+  const abs = Math.abs(value);
+  const formatted = formatter(abs);
+  return `${sign}${formatted}${unitSuffix}`;
+};
+
+const formatSignedHz = (deltaHz) => formatSigned(deltaHz, (v) => {
+  if (v >= 1000) return (v / 1000).toFixed(2) + ' kHz';
+  return v.toFixed(0) + ' Hz';
+});
+
+const formatSignedDb = (deltaDb, unit = ' dB') => formatSigned(deltaDb, (v) => v.toFixed(1), unit);
+
+const formatSignedBpm = (deltaBpm) => formatSigned(deltaBpm, (v) => v.toFixed(0));
+
+function updateReferenceUi() {
+  if (!referenceNameEl) return;
+  if (referenceIndex >= 0 && tracks[referenceIndex]) {
+    referenceNameEl.textContent = tracks[referenceIndex].name;
+  } else {
+    referenceNameEl.textContent = 'None';
+  }
+}
+
+function resetDeltas() {
+  if (bpmDeltaEl) bpmDeltaEl.textContent = '--';
+  if (loudnessDeltaEl) loudnessDeltaEl.textContent = '--';
+  if (crestDeltaEl) crestDeltaEl.textContent = '--';
+  if (brightnessDeltaEl) brightnessDeltaEl.textContent = '--';
+  if (rolloffDeltaEl) rolloffDeltaEl.textContent = '--';
+}
+
+function updateDeltas() {
+  if (referenceIndex < 0 || !tracks[referenceIndex] || currentIndex < 0 || !tracks[currentIndex]) {
+    resetDeltas();
+    return;
+  }
+
+  const current = tracks[currentIndex].analysis;
+  const reference = tracks[referenceIndex].analysis;
+  if (!current || !reference) {
+    resetDeltas();
+    return;
+  }
+
+  if (bpmDeltaEl) {
+    const delta = (Number.isFinite(current.bpm) && Number.isFinite(reference.bpm)) ? (current.bpm - reference.bpm) : null;
+    bpmDeltaEl.textContent = Number.isFinite(delta) ? `Δ ${formatSignedBpm(delta)}` : '--';
+  }
+
+  if (loudnessDeltaEl) {
+    const delta = (Number.isFinite(current.loudness) && Number.isFinite(reference.loudness)) ? (current.loudness - reference.loudness) : null;
+    loudnessDeltaEl.textContent = Number.isFinite(delta) ? `Δ ${formatSignedDb(delta, ' LUFS')}` : '--';
+  }
+
+  if (crestDeltaEl) {
+    const delta = (Number.isFinite(current.crestDb) && Number.isFinite(reference.crestDb)) ? (current.crestDb - reference.crestDb) : null;
+    crestDeltaEl.textContent = Number.isFinite(delta) ? `Δ ${formatSignedDb(delta)}` : '--';
+  }
+
+  if (brightnessDeltaEl) {
+    const delta = (Number.isFinite(current.brightness) && Number.isFinite(reference.brightness)) ? (current.brightness - reference.brightness) : null;
+    brightnessDeltaEl.textContent = Number.isFinite(delta) ? `Δ ${formatSignedHz(delta)}` : '--';
+  }
+
+  if (rolloffDeltaEl) {
+    const delta = (Number.isFinite(current.rolloff) && Number.isFinite(reference.rolloff)) ? (current.rolloff - reference.rolloff) : null;
+    rolloffDeltaEl.textContent = Number.isFinite(delta) ? `Δ ${formatSignedHz(delta)}` : '--';
+  }
+}
 
 async function estimateBpmFromMono(mono, sampleRate, shouldAbort) {
   if (!mono || mono.length < sampleRate * 2) {
@@ -294,10 +375,52 @@ function renderPlaylist() {
     <div class="playlist-item ${i === currentIndex ? 'active' : ''}" data-index="${i}">
       <div>${i + 1}</div>
       <div>${track.name}</div>
-      <div><button onclick="playTrack(${i})">${i === currentIndex ? '▶ Playing' : 'Play'}</button></div>
+      <div class="playlist-actions">
+        <button onclick="playTrack(${i})">${i === currentIndex ? '▶ Playing' : 'Play'}</button>
+        <button onclick="setReference(${i})">${i === referenceIndex ? 'Ref ✓' : 'Set Ref'}</button>
+      </div>
     </div>
   `).join('');
 }
+
+window.setReference = async function(index) {
+  initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    try { await audioCtx.resume(); } catch (err) { /* ignore */ }
+  }
+
+  if (referenceIndex === index) {
+    referenceIndex = -1;
+    updateReferenceUi();
+    renderPlaylist();
+    updateDeltas();
+    return;
+  }
+
+  referenceIndex = index;
+  updateReferenceUi();
+  renderPlaylist();
+
+  const track = tracks[index];
+  if (!track) {
+    updateDeltas();
+    return;
+  }
+
+  // Ensure analysis exists for the reference, without interrupting the current UI analysis.
+  if (!track.analysis) {
+    const runId = ++backgroundAnalysisRunId;
+    try {
+      const analysis = await computeTrackAnalysis(track, runId, () => runId !== backgroundAnalysisRunId);
+      if (runId !== backgroundAnalysisRunId) return;
+      if (analysis) track.analysis = analysis;
+    } catch (err) {
+      console.warn('Reference analysis failed:', err);
+    }
+  }
+
+  updateDeltas();
+};
 
 // Play track
 window.playTrack = function(index) {
@@ -331,7 +454,184 @@ window.playTrack = function(index) {
   }
 };
 
-// Analyze track
+async function computeTrackAnalysis(track, runId, shouldAbort) {
+  if (typeof Meyda === 'undefined') {
+    throw new Error('Meyda library not loaded. Please refresh the page.');
+  }
+  if (!audioCtx) {
+    throw new Error('AudioContext not initialized.');
+  }
+
+  const buffer = await track.file.arrayBuffer();
+  if (shouldAbort && shouldAbort()) return null;
+
+  const decoded = await audioCtx.decodeAudioData(buffer);
+  if (shouldAbort && shouldAbort()) return null;
+
+  const sampleRate = decoded.sampleRate;
+  const maxSamples = Math.min(decoded.length, Math.floor(sampleRate * 120));
+
+  let mono;
+  if (decoded.numberOfChannels === 1) {
+    const channelData = decoded.getChannelData(0);
+    const clampedLength = Math.min(channelData.length, maxSamples);
+    mono = channelData.subarray(0, clampedLength);
+    if (clampedLength > SAMPLE_YIELD_INTERVAL) {
+      await yieldToMain();
+      if (shouldAbort && shouldAbort()) return null;
+    }
+  } else {
+    mono = new Float32Array(maxSamples);
+    for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+      const data = decoded.getChannelData(ch);
+      for (let i = 0; i < maxSamples; i++) {
+        mono[i] += data[i];
+        if (i > 0 && i % SAMPLE_YIELD_INTERVAL === 0) {
+          await yieldToMain();
+          if (shouldAbort && shouldAbort()) return null;
+        }
+      }
+    }
+    for (let i = 0; i < maxSamples; i++) {
+      mono[i] /= decoded.numberOfChannels;
+      if (i > 0 && i % SAMPLE_YIELD_INTERVAL === 0) {
+        await yieldToMain();
+        if (shouldAbort && shouldAbort()) return null;
+      }
+    }
+  }
+
+  let peakSample = 0;
+  let sumSquares = 0;
+  for (let i = 0; i < mono.length; i++) {
+    const sample = mono[i];
+    const abs = Math.abs(sample);
+    if (abs > peakSample) peakSample = abs;
+    sumSquares += sample * sample;
+
+    if (i > 0 && i % SAMPLE_YIELD_INTERVAL === 0) {
+      await yieldToMain();
+      if (shouldAbort && shouldAbort()) return null;
+    }
+  }
+  const overallRms = mono.length ? Math.sqrt(sumSquares / mono.length) : null;
+
+  const bpmResult = await estimateBpmFromMono(
+    mono,
+    sampleRate,
+    () => (shouldAbort && shouldAbort())
+  );
+  if (shouldAbort && shouldAbort()) return null;
+
+  const frameSize = 4096;
+  const hopSize = 2048;
+  const chromaSum = new Array(12).fill(0);
+  let chromaCount = 0;
+  const centroids = [];
+  const rolloffValues = [];
+  const flatnessValues = [];
+  const zcrValues = [];
+  const loudnessValues = [];
+  const rmsValues = [];
+  const featureOptions = {
+    bufferSize: frameSize,
+    sampleRate: sampleRate,
+    windowingFunction: 'hann'
+  };
+  const availableFeatures = new Set(
+    typeof Meyda.featureExtractors === 'object'
+      ? Object.keys(Meyda.featureExtractors)
+      : []
+  );
+  const extractFeature = (name, frame) => {
+    if (!availableFeatures.has(name)) return null;
+    try {
+      return Meyda.extract(name, frame, featureOptions);
+    } catch (err) {
+      console.debug(`Meyda feature "${name}" unavailable`, err);
+      availableFeatures.delete(name);
+      return null;
+    }
+  };
+
+  let frameCount = 0;
+  for (let i = 0; i + frameSize <= mono.length; i += hopSize) {
+    const frame = mono.subarray(i, i + frameSize);
+    const chroma = extractFeature('chroma', frame);
+    const rms = extractFeature('rms', frame);
+    const centroid = extractFeature('spectralCentroid', frame);
+    const rolloff = extractFeature('spectralRolloff', frame);
+    const flatness = extractFeature('spectralFlatness', frame);
+    const zcr = extractFeature('zeroCrossingRate', frame);
+    const loudness = extractFeature('loudness', frame);
+
+    if (chroma && rms && rms > 0.003) {
+      for (let c = 0; c < 12; c++) chromaSum[c] += chroma[c];
+      chromaCount++;
+    }
+
+    if (typeof centroid === 'number') centroids.push(centroid);
+    if (typeof rolloff === 'number') rolloffValues.push(rolloff);
+    if (typeof flatness === 'number') flatnessValues.push(flatness);
+    if (typeof zcr === 'number') zcrValues.push(zcr);
+    if (typeof rms === 'number') rmsValues.push(rms);
+    if (loudness && typeof loudness.total === 'number') {
+      loudnessValues.push(loudness.total);
+    }
+
+    frameCount++;
+    if (frameCount % FRAME_YIELD_INTERVAL === 0) {
+      await yieldToMain();
+      if (shouldAbort && shouldAbort()) return null;
+    }
+  }
+
+  let key = null;
+  if (chromaCount > 0) {
+    const avgChroma = chromaSum.map(v => v / chromaCount);
+    key = detectKey(avgChroma);
+  }
+
+  const avgCentroid = average(centroids);
+  const avgRolloff = average(rolloffValues);
+  const avgFlatness = average(flatnessValues);
+  const avgZcr = average(zcrValues);
+  const avgLoudness = average(loudnessValues);
+  const avgFrameRms = average(rmsValues);
+  const dominantRms = Number.isFinite(overallRms) ? overallRms : avgFrameRms;
+  const rmsDb = dominantRms && dominantRms > 0 ? 20 * Math.log10(dominantRms) : null;
+  const peakDb = peakSample && peakSample > 0 ? 20 * Math.log10(peakSample) : null;
+  const crestFactor = dominantRms && dominantRms > 0 ? peakSample / dominantRms : null;
+  const crestDb = crestFactor && crestFactor > 0 ? 20 * Math.log10(crestFactor) : null;
+  const loudnessLufs = avgLoudness && avgLoudness > 0
+    ? -0.691 + 10 * Math.log10(avgLoudness)
+    : (dominantRms && dominantRms > 0 ? -0.691 + 20 * Math.log10(dominantRms) : null);
+  const zcrFrequency = Number.isFinite(avgZcr) ? (avgZcr * sampleRate) / 2 : null;
+
+  return {
+    key: key?.name || '--',
+    scale: key?.scale || '--',
+    confidence: key?.confidence || 0,
+    brightness: avgCentroid,
+    duration: mono.length / sampleRate,
+    partial: decoded.length > maxSamples,
+    bpm: bpmResult?.bpm ?? null,
+    bpmConfidence: bpmResult?.confidence ?? 0,
+    loudness: loudnessLufs,
+    rms: dominantRms,
+    rmsDb,
+    peak: peakSample,
+    peakDb,
+    crestFactor,
+    crestDb,
+    rolloff: avgRolloff,
+    flatness: avgFlatness,
+    zcr: avgZcr,
+    zcrFrequency
+  };
+}
+
+// Analyze track (UI)
 async function analyzeTrack(track, runId) {
   const thisRunId = runId ?? ++analysisRunId;
   status.textContent = 'Analyzing...';
@@ -341,181 +641,12 @@ async function analyzeTrack(track, runId) {
   if (analysisOverlay) analysisOverlay.setAttribute('aria-hidden', 'false');
 
   try {
-    if (typeof Meyda === 'undefined') {
-      throw new Error('Meyda library not loaded. Please refresh the page.');
-    }
-
-    const buffer = await track.file.arrayBuffer();
-    if (thisRunId !== analysisRunId) return;
-
-    const decoded = await audioCtx.decodeAudioData(buffer);
-    if (thisRunId !== analysisRunId) return;
-
-    const sampleRate = decoded.sampleRate;
-    const maxSamples = Math.min(decoded.length, Math.floor(sampleRate * 120));
-
-    let mono;
-    if (decoded.numberOfChannels === 1) {
-      const channelData = decoded.getChannelData(0);
-      const clampedLength = Math.min(channelData.length, maxSamples);
-      mono = channelData.subarray(0, clampedLength);
-      if (clampedLength > SAMPLE_YIELD_INTERVAL) {
-        await yieldToMain();
-        if (thisRunId !== analysisRunId) return;
-      }
-    } else {
-      mono = new Float32Array(maxSamples);
-      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
-        const data = decoded.getChannelData(ch);
-        for (let i = 0; i < maxSamples; i++) {
-          mono[i] += data[i];
-          if (i > 0 && i % SAMPLE_YIELD_INTERVAL === 0) {
-            await yieldToMain();
-            if (thisRunId !== analysisRunId) return;
-          }
-        }
-      }
-      for (let i = 0; i < maxSamples; i++) {
-        mono[i] /= decoded.numberOfChannels;
-        if (i > 0 && i % SAMPLE_YIELD_INTERVAL === 0) {
-          await yieldToMain();
-          if (thisRunId !== analysisRunId) return;
-        }
-      }
-    }
-
-    let peakSample = 0;
-    let sumSquares = 0;
-    for (let i = 0; i < mono.length; i++) {
-      const sample = mono[i];
-      const abs = Math.abs(sample);
-      if (abs > peakSample) peakSample = abs;
-      sumSquares += sample * sample;
-
-      if (i > 0 && i % SAMPLE_YIELD_INTERVAL === 0) {
-        await yieldToMain();
-        if (thisRunId !== analysisRunId) return;
-      }
-    }
-    const overallRms = mono.length ? Math.sqrt(sumSquares / mono.length) : null;
-
-    const bpmResult = await estimateBpmFromMono(
-      mono,
-      sampleRate,
-      () => thisRunId !== analysisRunId
-    );
-    if (thisRunId !== analysisRunId) return;
-
-    const frameSize = 4096;
-    const hopSize = 2048;
-    const chromaSum = new Array(12).fill(0);
-    let chromaCount = 0;
-    const centroids = [];
-    const rolloffValues = [];
-    const flatnessValues = [];
-    const zcrValues = [];
-    const loudnessValues = [];
-    const rmsValues = [];
-    const featureOptions = {
-      bufferSize: frameSize,
-      sampleRate: sampleRate,
-      windowingFunction: 'hann'
-    };
-    const availableFeatures = new Set(
-      typeof Meyda.featureExtractors === 'object'
-        ? Object.keys(Meyda.featureExtractors)
-        : []
-    );
-    const extractFeature = (name, frame) => {
-      if (!availableFeatures.has(name)) return null;
-      try {
-        return Meyda.extract(name, frame, featureOptions);
-      } catch (err) {
-        console.debug(`Meyda feature "${name}" unavailable`, err);
-        availableFeatures.delete(name);
-        return null;
-      }
-    };
-
-    let frameCount = 0;
-    for (let i = 0; i + frameSize <= mono.length; i += hopSize) {
-      const frame = mono.subarray(i, i + frameSize);
-      const chroma = extractFeature('chroma', frame);
-      const rms = extractFeature('rms', frame);
-      const centroid = extractFeature('spectralCentroid', frame);
-      const rolloff = extractFeature('spectralRolloff', frame);
-      const flatness = extractFeature('spectralFlatness', frame);
-      const zcr = extractFeature('zeroCrossingRate', frame);
-      const loudness = extractFeature('loudness', frame);
-
-      if (chroma && rms && rms > 0.003) {
-        for (let c = 0; c < 12; c++) chromaSum[c] += chroma[c];
-        chromaCount++;
-      }
-
-      if (typeof centroid === 'number') centroids.push(centroid);
-      if (typeof rolloff === 'number') rolloffValues.push(rolloff);
-      if (typeof flatness === 'number') flatnessValues.push(flatness);
-      if (typeof zcr === 'number') zcrValues.push(zcr);
-      if (typeof rms === 'number') rmsValues.push(rms);
-      if (loudness && typeof loudness.total === 'number') {
-        loudnessValues.push(loudness.total);
-      }
-
-      frameCount++;
-      if (frameCount % FRAME_YIELD_INTERVAL === 0) {
-        await yieldToMain();
-        if (thisRunId !== analysisRunId) return;
-      }
-    }
-
-    let key = null;
-    if (chromaCount > 0) {
-      const avgChroma = chromaSum.map(v => v / chromaCount);
-      key = detectKey(avgChroma);
-    }
-
-    const avgCentroid = average(centroids);
-    const avgRolloff = average(rolloffValues);
-    const avgFlatness = average(flatnessValues);
-    const avgZcr = average(zcrValues);
-    const avgLoudness = average(loudnessValues);
-    const avgFrameRms = average(rmsValues);
-    const dominantRms = Number.isFinite(overallRms) ? overallRms : avgFrameRms;
-    const rmsDb = dominantRms && dominantRms > 0 ? 20 * Math.log10(dominantRms) : null;
-    const peakDb = peakSample && peakSample > 0 ? 20 * Math.log10(peakSample) : null;
-    const crestFactor = dominantRms && dominantRms > 0 ? peakSample / dominantRms : null;
-    const crestDb = crestFactor && crestFactor > 0 ? 20 * Math.log10(crestFactor) : null;
-    const loudnessLufs = avgLoudness && avgLoudness > 0
-      ? -0.691 + 10 * Math.log10(avgLoudness)
-      : (dominantRms && dominantRms > 0 ? -0.691 + 20 * Math.log10(dominantRms) : null);
-    const zcrFrequency = Number.isFinite(avgZcr) ? (avgZcr * sampleRate) / 2 : null;
-
-    const analysis = {
-      key: key?.name || '--',
-      scale: key?.scale || '--',
-      confidence: key?.confidence || 0,
-      brightness: avgCentroid,
-      duration: mono.length / sampleRate,
-      partial: decoded.length > maxSamples,
-      bpm: bpmResult?.bpm ?? null,
-      bpmConfidence: bpmResult?.confidence ?? 0,
-      loudness: loudnessLufs,
-      rms: dominantRms,
-      rmsDb,
-      peak: peakSample,
-      peakDb,
-      crestFactor,
-      crestDb,
-      rolloff: avgRolloff,
-      flatness: avgFlatness,
-      zcr: avgZcr,
-      zcrFrequency
-    };
+    const analysis = await computeTrackAnalysis(track, thisRunId, () => thisRunId !== analysisRunId);
+    if (!analysis || thisRunId !== analysisRunId) return;
 
     track.analysis = analysis;
 
-    if (thisRunId === analysisRunId && track === tracks[currentIndex]) {
+    if (track === tracks[currentIndex]) {
       displayAnalysis(analysis);
       status.textContent = 'Ready';
       status.className = 'status ready';
@@ -631,6 +762,8 @@ function displayAnalysis(analysis) {
   dynamicsSummaryEl.textContent = describeDynamics(analysis.crestDb, analysis.loudness);
 
   syncMeterHeight();
+  updateReferenceUi();
+  updateDeltas();
 }
 
 // Reset analysis
@@ -641,6 +774,8 @@ function resetAnalysis() {
   brightnessEl.textContent = '--';
   durationEl.textContent = '--';
   if (bpmEl) bpmEl.textContent = '--';
+  updateReferenceUi();
+  resetDeltas();
   loudnessEl.textContent = '--';
   rmsEl.textContent = '--';
   peakEl.textContent = '--';

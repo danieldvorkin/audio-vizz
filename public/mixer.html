@@ -59,6 +59,10 @@
         <strong>Dynamic Headroom</strong>
         <span id="dynamicsSummary">--</span>
       </div>
+      <div class="toolbar-chip" tabindex="0" data-tooltip="Pick a reference track to see deltas (A/B) for key metrics.">
+        <strong>Reference</strong>
+        <span id="referenceName">None</span>
+      </div>
     </div>
     <div class="analysis-grid">
       <div class="metric" tabindex="0" data-tooltip="Musical key with the highest correlation from the chroma profile.">
@@ -76,6 +80,7 @@
       <div class="metric" tabindex="0" data-tooltip="Spectral centroid indicates perceived brightness; higher values mean more high-end energy.">
         <div class="metric-label">Brightness</div>
         <div class="metric-value" id="brightness">--</div>
+        <div class="metric-subvalue" id="brightnessDelta">--</div>
       </div>
       <div class="metric" tabindex="0" data-tooltip="Length of the decoded buffer analyzed. Partial flags when long files are truncated to keep processing fast.">
         <div class="metric-label">Duration</div>
@@ -84,10 +89,12 @@
       <div class="metric" tabindex="0" data-tooltip="Estimated tempo (beats per minute) based on onset periodicity. Accuracy depends on clear rhythmic transients.">
         <div class="metric-label">BPM</div>
         <div class="metric-value" id="bpm">--</div>
+        <div class="metric-subvalue" id="bpmDelta">--</div>
       </div>
       <div class="metric" tabindex="0" data-tooltip="Integrated loudness estimate (LUFS) derived from average frame loudness and overall RMS.">
         <div class="metric-label">Loudness</div>
         <div class="metric-value" id="loudness">--</div>
+        <div class="metric-subvalue" id="loudnessDelta">--</div>
       </div>
       <div class="metric" tabindex="0" data-tooltip="Average RMS (root-mean-square) level converted to dBFS, representing perceived power.">
         <div class="metric-label">Average RMS</div>
@@ -100,10 +107,12 @@
       <div class="metric" tabindex="0" data-tooltip="Crest factor indicates dynamic headroom: peak-to-average ratio in decibels.">
         <div class="metric-label">Crest Factor</div>
         <div class="metric-value" id="crest">--</div>
+        <div class="metric-subvalue" id="crestDelta">--</div>
       </div>
       <div class="metric" tabindex="0" data-tooltip="Spectral roll-off: frequency below which ~85% of energy resides; useful for tonal balance.">
         <div class="metric-label">Roll-off</div>
         <div class="metric-value" id="rolloff">--</div>
+        <div class="metric-subvalue" id="rolloffDelta">--</div>
       </div>
       <div class="metric" tabindex="0" data-tooltip="Spectral flatness compares energy distribution to white noise; lower values mean more tonal focus.">
         <div class="metric-label">Flatness</div>

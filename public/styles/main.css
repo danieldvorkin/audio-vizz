@@ -402,7 +402,7 @@ canvas.hover-crosshair {
 }
 .playlist-header {
   display: grid;
-  grid-template-columns: 50px 1fr 100px;
+  grid-template-columns: 50px 1fr 170px;
   padding: 12px;
   background: rgba(255,255,255,0.05);
   font-weight: 600;
@@ -414,10 +414,26 @@ canvas.hover-crosshair {
 }
 .playlist-item {
   display: grid;
-  grid-template-columns: 50px 1fr 100px;
+  grid-template-columns: 50px 1fr 170px;
   padding: 12px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
   align-items: center;
+}
+
+.playlist-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.playlist-actions button {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.metric-subvalue {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.72);
 }
 .playlist-item:hover {
   background: rgba(255,255,255,0.03);
