@@ -549,21 +549,42 @@ function detectKey(chroma) {
 
   const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 
-  const normChroma = normalize(chroma);
-  const normMajor = normalize(MAJOR);
-  const normMinor = normalize(MINOR);
+  const buildScaleTemplate = (intervals) => {
+    // Simple non-negative template: emphasize tonic, keep non-scale tones low.
+    // Normalization (below) makes templates comparable.
+    const inScale = 1.0;
+    const outScale = 0.18;
+    const tonicBoost = 1.25;
+    const template = new Array(12).fill(outScale);
+    for (const step of intervals) {
+      template[((step % 12) + 12) % 12] = inScale;
+    }
+    template[0] = Math.max(template[0], tonicBoost);
+    return template;
+  };
 
+  const SCALE_TEMPLATES = [
+    // Existing Krumhansl-style profiles for major/minor.
+    { name: 'major', profile: MAJOR },
+    { name: 'minor', profile: MINOR },
+    // Common diatonic modes (intervals from tonic).
+    { name: 'dorian', profile: buildScaleTemplate([0, 2, 3, 5, 7, 9, 10]) },
+    { name: 'phrygian', profile: buildScaleTemplate([0, 1, 3, 5, 7, 8, 10]) },
+    { name: 'lydian', profile: buildScaleTemplate([0, 2, 4, 6, 7, 9, 11]) },
+    { name: 'mixolydian', profile: buildScaleTemplate([0, 2, 4, 5, 7, 9, 10]) },
+    { name: 'locrian', profile: buildScaleTemplate([0, 1, 3, 5, 6, 8, 10]) }
+  ];
+
+  const normChroma = normalize(chroma);
   let best = { score: -Infinity, name: null, scale: null };
 
   for (let i = 0; i < 12; i++) {
-    const majorScore = dot(normChroma, rotate(normMajor, i));
-    if (majorScore > best.score) {
-      best = { score: majorScore, name: KEY_NAMES[i], scale: 'major' };
-    }
-
-    const minorScore = dot(normChroma, rotate(normMinor, i));
-    if (minorScore > best.score) {
-      best = { score: minorScore, name: KEY_NAMES[i], scale: 'minor' };
+    for (const template of SCALE_TEMPLATES) {
+      const normTemplate = normalize(template.profile);
+      const score = dot(normChroma, rotate(normTemplate, i));
+      if (score > best.score) {
+        best = { score, name: KEY_NAMES[i], scale: template.name };
+      }
     }
   }
 

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeterLab – Glossary</title>
+  <meta name="theme-color" content="#121212">
+  <link rel="icon" href="./favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+  <link rel="manifest" href="./site.webmanifest">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-dark meterlab-navbar" aria-label="Primary">
+    <div class="container-fluid">
+      <a class="navbar-brand d-flex align-items-center gap-2" href="./mixer.html">
+        <img src="./assets/meterlab-logo.svg" alt="MeterLab" width="28" height="28" decoding="async">
+        <span>MeterLab</span>
+      </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#meterlabNav" aria-controls="meterlabNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="meterlabNav">
+        <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+          <li class="nav-item">
+            <a class="nav-link" href="./mixer.html">Mixer</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link active" aria-current="page" href="./glossary.html">Glossary</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container glossary">
+    <div class="analysis-panel">
+      <div class="d-flex justify-content-between align-items-center" style="margin-bottom: 10px;">
+        <h3 style="margin: 0;">Glossary</h3>
+        <span class="status ready">Reference</span>
+      </div>
+      <p class="glossary-lead">
+        MeterLab’s stats are quick “signals” about a track. They’re best used for comparison and decision-making (e.g., matching a playlist, checking mix balance), not as absolute truth.
+      </p>
+    </div>
+
+    <div class="analysis-panel">
+      <h3 class="glossary-heading">Musical</h3>
+      <div class="glossary-item">
+        <h4>Key</h4>
+        <p><strong>What it is:</strong> The most likely tonic (C, C#, D…).</p>
+        <p><strong>Why it matters:</strong> Helpful for harmonic mixing, mashups, and choosing compatible samples.</p>
+        <p><strong>Genre notes:</strong> EDM/house/DJ sets often benefit from key-matching; jazz and some live recordings may modulate and confuse single-key estimation.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Scale (Major/Minor + Modes)</h4>
+        <p><strong>What it is:</strong> A best-fit scale quality (major/minor) and common modes (dorian, phrygian, lydian, mixolydian, locrian).</p>
+        <p><strong>Why it matters:</strong> Gives a hint of “mood” (bright vs dark) and common chord vocabulary.</p>
+        <p><strong>Genre notes:</strong> Rock/blues often leans mixolydian; metal can lean phrygian; funk can show dorian; pop is frequently major/minor.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Confidence</h4>
+        <p><strong>What it is:</strong> How strongly the chroma profile matches the best-fitting key/scale model.</p>
+        <p><strong>Why it matters:</strong> Low confidence usually means: weak tonality, lots of noise/percussion, heavy modulation, or sparse harmonic content.</p>
+        <p><strong>Genre notes:</strong> Ambient/drone and very percussive tracks often produce lower confidence.</p>
+      </div>
+    </div>
+
+    <div class="analysis-panel">
+      <h3 class="glossary-heading">Tempo</h3>
+      <div class="glossary-item">
+        <h4>BPM</h4>
+        <p><strong>What it is:</strong> Estimated tempo (beats per minute) from onset periodicity (transient pulses).</p>
+        <p><strong>Why it matters:</strong> Useful for beatmatching, planning transitions, and picking time-synced effects.</p>
+        <p><strong>Genre notes:</strong> EDM/house/techno typically yields strong BPM confidence; classical, rubato, and ambient may not have a stable tempo.</p>
+      </div>
+    </div>
+
+    <div class="analysis-panel">
+      <h3 class="glossary-heading">Spectral / Tone</h3>
+      <div class="glossary-item">
+        <h4>Brightness (Spectral Centroid)</h4>
+        <p><strong>What it is:</strong> A “center of mass” of frequency energy — higher means more high-end content.</p>
+        <p><strong>Why it matters:</strong> Quick check for tonal tilt: dull/warm vs bright/present.</p>
+        <p><strong>Genre notes:</strong> Pop often trends brighter; lo-fi and some hip-hop can be intentionally warmer; harsh brightness can fatigue in metal/EDM if overdone.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Roll-off</h4>
+        <p><strong>What it is:</strong> A frequency below which most spectral energy sits (here ~85%).</p>
+        <p><strong>Why it matters:</strong> Helps spot “air” vs “mid-heavy” mixes and the presence/absence of high-frequency content.</p>
+        <p><strong>Genre notes:</strong> Modern pop/EDM often has higher roll-off (more extended highs); older recordings or vinyl rips can roll off earlier.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Flatness</h4>
+        <p><strong>What it is:</strong> How noise-like the spectrum is — low = more harmonic/tonal, high = noisier.</p>
+        <p><strong>Why it matters:</strong> Can hint at distorted/noisy textures vs clean harmonic content.</p>
+        <p><strong>Genre notes:</strong> Distorted guitars, aggressive synths, and noisy percussion can raise flatness; acoustic/classical tends to be more harmonic.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Zero Crossings (ZCR)</h4>
+        <p><strong>What it is:</strong> How often the waveform crosses zero — loosely associated with noisiness/brightness and transient density.</p>
+        <p><strong>Why it matters:</strong> Quick proxy for “busy/noisy” vs “smooth/tonal” signals.</p>
+        <p><strong>Genre notes:</strong> Hi-hats/noise layers can push ZCR up; bass-heavy, sustained material tends to lower it.</p>
+      </div>
+    </div>
+
+    <div class="analysis-panel">
+      <h3 class="glossary-heading">Dynamics / Level</h3>
+      <div class="glossary-item">
+        <h4>Loudness (LUFS)</h4>
+        <p><strong>What it is:</strong> A loudness estimate aligned to perceived level (roughly comparable across tracks).</p>
+        <p><strong>Why it matters:</strong> Helps match levels between songs and detect overly hot masters.</p>
+        <p><strong>Genre notes:</strong> EDM/modern pop often targets louder masters; classical and jazz usually preserve more headroom.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Average RMS & Peak Level</h4>
+        <p><strong>What it is:</strong> RMS is average power; peak is the highest sample magnitude (both expressed in dBFS here).</p>
+        <p><strong>Why it matters:</strong> RMS reflects “density”; peaks reflect headroom and transient sharpness.</p>
+        <p><strong>Genre notes:</strong> Hip-hop can have high low-end RMS; acoustic can show lower RMS but higher transient peaks (snare, plucks).</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Crest Factor</h4>
+        <p><strong>What it is:</strong> Peak-to-average ratio (in dB). Higher crest = more dynamic range/punch.</p>
+        <p><strong>Why it matters:</strong> Quick view of compression/limiting intensity and transient impact.</p>
+        <p><strong>Genre notes:</strong> Modern EDM/pop often has lower crest (heavier limiting); live recordings/classical often have higher crest.</p>
+      </div>
+      <div class="glossary-item">
+        <h4>Duration (and “partial”)</h4>
+        <p><strong>What it is:</strong> Duration is the analyzed window length; “partial” means only the first ~2 minutes were analyzed for performance.</p>
+        <p><strong>Why it matters:</strong> If a song changes dramatically later, the stats reflect the analyzed segment.</p>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

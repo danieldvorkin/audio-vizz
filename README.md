@@ -1,4 +1,4 @@
-# Audio Mixer / Visualizer
+# MeterLab
 
 ## Overview
 
@@ -10,7 +10,7 @@ This project is a web-based audio mixer and visualizer that allows users to uplo
 - **Playlist management**: View and play uploaded tracks in a playlist interface.
 - **Real-time audio analysis**:
   - Musical key and scale detection (major/minor)
-  # Audio Mixer / Visualizer
+  # MeterLab
 
   ## Overview
 
