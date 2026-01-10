@@ -24,6 +24,7 @@ const crestEl = document.getElementById('crest');
 const rolloffEl = document.getElementById('rolloff');
 const flatnessEl = document.getElementById('flatness');
 const zcrEl = document.getElementById('zcr');
+const bpmEl = document.getElementById('bpm');
 const brightnessSummaryEl = document.getElementById('brightnessSummary');
 const tonalSummaryEl = document.getElementById('tonalSummary');
 const dynamicsSummaryEl = document.getElementById('dynamicsSummary');
@@ -75,6 +76,13 @@ const formatPercent = (value) => {
   return (value * 100).toFixed(0) + '%';
 };
 
+const formatBpm = (bpm, confidence) => {
+  if (!Number.isFinite(bpm)) return '--';
+  const rounded = Math.round(bpm);
+  if (!Number.isFinite(confidence)) return `${rounded}`;
+  return `${rounded} (${Math.round(clamp(confidence, 0, 1) * 100)}%)`;
+};
+
 const describeBrightness = (centroid) => {
   if (!Number.isFinite(centroid)) return '--';
   if (centroid < 1500) return `Warm (${formatHz(centroid)})`;
@@ -100,6 +108,112 @@ const describeDynamics = (crestDb, loudness) => {
 };
 
 const average = (arr) => (arr && arr.length ? arr.reduce((sum, value) => sum + value, 0) / arr.length : null);
+
+async function estimateBpmFromMono(mono, sampleRate, shouldAbort) {
+  if (!mono || mono.length < sampleRate * 2) {
+    return { bpm: null, confidence: 0 };
+  }
+
+  // Energy envelope + positive differences (simple onset strength function).
+  const hopSize = 512;
+  const windowSize = 1024;
+  const frameCount = Math.floor((mono.length - windowSize) / hopSize);
+  if (frameCount < 64) return { bpm: null, confidence: 0 };
+
+  const envelope = new Float32Array(frameCount);
+  let envMax = 0;
+  let envSum = 0;
+
+  for (let f = 0; f < frameCount; f++) {
+    if (shouldAbort && shouldAbort()) return { bpm: null, confidence: 0 };
+    const start = f * hopSize;
+    let sumSq = 0;
+    for (let i = 0; i < windowSize; i++) {
+      const s = mono[start + i] || 0;
+      sumSq += s * s;
+    }
+    const rms = Math.sqrt(sumSq / windowSize);
+    // Log-compress to reduce dominance of loud sections.
+    const value = Math.log10(1e-8 + rms);
+    envelope[f] = value;
+    envSum += value;
+    if (value > envMax) envMax = value;
+
+    if (f > 0 && f % 2048 === 0) {
+      await yieldToMain();
+    }
+  }
+
+  const envMean = envSum / frameCount;
+  const onset = new Float32Array(frameCount);
+  let onsetMax = 0;
+  let onsetSum = 0;
+  for (let i = 1; i < frameCount; i++) {
+    if (shouldAbort && shouldAbort()) return { bpm: null, confidence: 0 };
+    const diff = (envelope[i] - envMean) - (envelope[i - 1] - envMean);
+    const v = diff > 0 ? diff : 0;
+    onset[i] = v;
+    onsetSum += v;
+    if (v > onsetMax) onsetMax = v;
+    if (i % 4096 === 0) {
+      await yieldToMain();
+    }
+  }
+
+  // If there's basically no rhythmic activity, bail.
+  const onsetMean = onsetSum / frameCount;
+  if (!Number.isFinite(onsetMean) || onsetMean < 1e-4 || onsetMax < 1e-3) {
+    return { bpm: null, confidence: 0 };
+  }
+
+  // Autocorrelation of onset strength within a plausible tempo range.
+  const minBpm = 60;
+  const maxBpm = 200;
+  const minLag = Math.floor((60 * sampleRate) / (maxBpm * hopSize));
+  const maxLag = Math.ceil((60 * sampleRate) / (minBpm * hopSize));
+  const safeMinLag = Math.max(1, minLag);
+  const safeMaxLag = Math.min(frameCount - 2, Math.max(safeMinLag + 1, maxLag));
+
+  let bestLag = null;
+  let bestScore = -Infinity;
+  let secondScore = -Infinity;
+
+  for (let lag = safeMinLag; lag <= safeMaxLag; lag++) {
+    if (shouldAbort && shouldAbort()) return { bpm: null, confidence: 0 };
+    let sum = 0;
+    // Skip the first chunk where onset is often zero.
+    for (let i = lag; i < frameCount; i++) {
+      sum += onset[i] * onset[i - lag];
+    }
+
+    if (sum > bestScore) {
+      secondScore = bestScore;
+      bestScore = sum;
+      bestLag = lag;
+    } else if (sum > secondScore) {
+      secondScore = sum;
+    }
+  }
+
+  if (!Number.isFinite(bestScore) || bestLag == null || bestScore <= 0) {
+    return { bpm: null, confidence: 0 };
+  }
+
+  let bpm = (60 * sampleRate) / (bestLag * hopSize);
+
+  // Basic octave correction (common half/double tempo ambiguity).
+  if (bpm < 80) bpm *= 2;
+  else if (bpm > 180) bpm /= 2;
+
+  if (!Number.isFinite(bpm)) return { bpm: null, confidence: 0 };
+  bpm = clamp(bpm, minBpm, maxBpm);
+
+  const confidence = Number.isFinite(secondScore) && bestScore > 0
+    ? clamp((bestScore - secondScore) / bestScore, 0, 1)
+    : 0;
+
+  return { bpm, confidence };
+}
 
 // Initialize audio context
 function initAudio() {
@@ -285,6 +399,13 @@ async function analyzeTrack(track, runId) {
     }
     const overallRms = mono.length ? Math.sqrt(sumSquares / mono.length) : null;
 
+    const bpmResult = await estimateBpmFromMono(
+      mono,
+      sampleRate,
+      () => thisRunId !== analysisRunId
+    );
+    if (thisRunId !== analysisRunId) return;
+
     const frameSize = 4096;
     const hopSize = 2048;
     const chromaSum = new Array(12).fill(0);
@@ -377,6 +498,8 @@ async function analyzeTrack(track, runId) {
       brightness: avgCentroid,
       duration: mono.length / sampleRate,
       partial: decoded.length > maxSamples,
+      bpm: bpmResult?.bpm ?? null,
+      bpmConfidence: bpmResult?.confidence ?? 0,
       loudness: loudnessLufs,
       rms: dominantRms,
       rmsDb,
@@ -462,6 +585,10 @@ function displayAnalysis(analysis) {
   const secs = Math.floor(analysis.duration % 60);
   durationEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}${analysis.partial ? ' (partial)' : ''}`;
 
+  if (bpmEl) {
+    bpmEl.textContent = formatBpm(analysis.bpm, analysis.bpmConfidence);
+  }
+
   loudnessEl.textContent = formatLoudness(analysis.loudness);
   rmsEl.textContent = formatDbfs(analysis.rmsDb);
   peakEl.textContent = formatDbfs(analysis.peakDb);
@@ -492,6 +619,7 @@ function resetAnalysis() {
   confidenceEl.textContent = '--';
   brightnessEl.textContent = '--';
   durationEl.textContent = '--';
+  if (bpmEl) bpmEl.textContent = '--';
   loudnessEl.textContent = '--';
   rmsEl.textContent = '--';
   peakEl.textContent = '--';
