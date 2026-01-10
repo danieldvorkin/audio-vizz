@@ -1,0 +1,12 @@
+[build]
+  publish = "public"
+
+[[redirects]]
+  from = "/"
+  to = "/mixer.html"
+  status = 200
+
+[[redirects]]
+  from = "/mixer"
+  to = "/mixer.html"
+  status = 200
