@@ -3,10 +3,15 @@ let tracks = [];
 let currentIndex = -1;
 let audioCtx = null;
 let analyser = null;
+let inputAnalyser = null;
 let source = null;
+let gainNode = null;
 let analysisRunId = 0;
 let backgroundAnalysisRunId = 0;
 let referenceIndex = -1;
+
+let loudnessMatchEnabled = false;
+let loudnessMatchDeltaDb = null;
 
 // Elements
 const uploadArea = document.getElementById('uploadArea');
@@ -42,11 +47,18 @@ const spectrogramCanvas = document.getElementById('spectrogram');
 const scrollingCanvas = document.getElementById('scrolling');
 const meterFill = document.getElementById('meterFill');
 const meterText = document.getElementById('meterText');
-const meter = document.querySelector('.meter');
+const inputMeterFill = document.getElementById('inputMeterFill');
+const inputMeterText = document.getElementById('inputMeterText');
+const outputMeterFill = document.getElementById('outputMeterFill');
+const outputMeterText = document.getElementById('outputMeterText');
+const meterStack = document.querySelector('.meter-stack');
 const canvasStack = document.querySelector('.canvas-stack');
 const leftColumn = document.querySelector('.left-column');
 const analysisPanel = document.querySelector('.analysis-panel');
 const analysisOverlay = document.getElementById('analysisOverlay');
+const loudnessMatchToggle = document.getElementById('loudnessMatchToggle');
+const loudnessMatchAmountEl = document.getElementById('loudnessMatchAmount');
+const loudnessMatchRefreshBtn = document.getElementById('loudnessMatchRefresh');
 
 // Constants
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -301,12 +313,169 @@ function initAudio() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser();
+    inputAnalyser = audioCtx.createAnalyser();
+    gainNode = audioCtx.createGain();
+    gainNode.gain.value = 1;
     analyser.fftSize = 2048;
+    inputAnalyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.3;
+    inputAnalyser.smoothingTimeConstant = 0.3;
     source = audioCtx.createMediaElementSource(audio);
-    source.connect(analyser);
+    // Tap input before loudness-match gain.
+    source.connect(inputAnalyser);
+    source.connect(gainNode);
+    gainNode.connect(analyser);
     analyser.connect(audioCtx.destination);
   }
+}
+
+function clampDb(valueDb, minDb, maxDb) {
+  if (!Number.isFinite(valueDb)) return 0;
+  return Math.min(maxDb, Math.max(minDb, valueDb));
+}
+
+function setPlaybackGainLinear(value) {
+  if (!audioCtx || !gainNode) return;
+  const safe = Number.isFinite(value) ? Math.max(0, Math.min(8, value)) : 1;
+  const now = audioCtx.currentTime;
+  try {
+    gainNode.gain.cancelScheduledValues(now);
+    gainNode.gain.setTargetAtTime(safe, now, 0.03);
+  } catch {
+    gainNode.gain.value = safe;
+  }
+}
+
+function setLoudnessMatchReadout(deltaDb) {
+  if (!loudnessMatchAmountEl) return;
+  if (!loudnessMatchEnabled) {
+    loudnessMatchAmountEl.textContent = '--';
+    return;
+  }
+  if (!Number.isFinite(deltaDb)) {
+    loudnessMatchAmountEl.textContent = '--';
+    return;
+  }
+  const sign = deltaDb > 0 ? '+' : (deltaDb < 0 ? '−' : '±');
+  loudnessMatchAmountEl.textContent = `${sign}${Math.abs(deltaDb).toFixed(1)} dB`;
+}
+
+function updateOutputMeterUi(outputDbfs) {
+  if (!outputMeterFill || !outputMeterText) return;
+  const clamped = Number.isFinite(outputDbfs) ? Math.max(-60, Math.min(0, outputDbfs)) : -Infinity;
+  const percent = Number.isFinite(clamped) ? ((clamped + 60) / 60) * 100 : 0;
+
+  outputMeterFill.style.height = Math.max(0, Math.min(100, percent)) + '%';
+  outputMeterText.textContent = Number.isFinite(clamped) ? `${clamped.toFixed(1)}` : '-inf';
+
+  if (clamped > -3) {
+    outputMeterFill.style.background = '#f44336';
+  } else if (clamped > -12) {
+    outputMeterFill.style.background = '#ffeb3b';
+  } else {
+    outputMeterFill.style.background = '#4caf50';
+  }
+}
+
+function applyLoudnessMatchGain() {
+  if (!loudnessMatchEnabled) {
+    setPlaybackGainLinear(1);
+    setLoudnessMatchReadout(null);
+    loudnessMatchDeltaDb = null;
+    return;
+  }
+
+  if (referenceIndex < 0 || currentIndex < 0) {
+    setPlaybackGainLinear(1);
+    setLoudnessMatchReadout(null);
+    loudnessMatchDeltaDb = null;
+    return;
+  }
+
+  const current = tracks[currentIndex]?.analysis;
+  const reference = tracks[referenceIndex]?.analysis;
+  if (!current || !reference) {
+    setPlaybackGainLinear(1);
+    setLoudnessMatchReadout(null);
+    loudnessMatchDeltaDb = null;
+    return;
+  }
+
+  const currentLufs = current.loudness;
+  const referenceLufs = reference.loudness;
+  if (!Number.isFinite(currentLufs) || !Number.isFinite(referenceLufs)) {
+    setPlaybackGainLinear(1);
+    setLoudnessMatchReadout(null);
+    loudnessMatchDeltaDb = null;
+    return;
+  }
+
+  // Match current playback loudness to reference loudness.
+  // Clamp to avoid extreme boosts/cuts and clipping risk.
+  const deltaDb = clampDb(referenceLufs - currentLufs, -12, 12);
+  const gain = Math.pow(10, deltaDb / 20);
+  setPlaybackGainLinear(gain);
+  setLoudnessMatchReadout(deltaDb);
+  loudnessMatchDeltaDb = deltaDb;
+}
+
+if (loudnessMatchToggle) {
+  loudnessMatchEnabled = !!loudnessMatchToggle.checked;
+  loudnessMatchToggle.addEventListener('change', () => {
+    loudnessMatchEnabled = !!loudnessMatchToggle.checked;
+    applyLoudnessMatchGain();
+  });
+}
+
+async function refreshLoudnessMatch() {
+  initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    try { await audioCtx.resume(); } catch (err) { /* ignore */ }
+  }
+
+  if (referenceIndex < 0 || currentIndex < 0) {
+    applyLoudnessMatchGain();
+    return;
+  }
+
+  const currentTrack = tracks[currentIndex];
+  const referenceTrack = tracks[referenceIndex];
+  if (!currentTrack || !referenceTrack) {
+    applyLoudnessMatchGain();
+    return;
+  }
+
+  const runId = ++backgroundAnalysisRunId;
+  const shouldAbort = () => runId !== backgroundAnalysisRunId;
+
+  // Fill missing analyses in the background so gain-match has numbers to use.
+  const maybeCompute = async (track) => {
+    if (track.analysis) return;
+    try {
+      const analysis = await computeTrackAnalysis(track, runId, shouldAbort);
+      if (shouldAbort()) return;
+      if (analysis) track.analysis = analysis;
+    } catch (err) {
+      console.warn('Refresh analysis failed:', err);
+    }
+  };
+
+  await maybeCompute(referenceTrack);
+  await maybeCompute(currentTrack);
+  if (shouldAbort()) return;
+
+  if (currentTrack.analysis && currentIndex >= 0 && tracks[currentIndex] === currentTrack) {
+    try { displayAnalysis(currentTrack.analysis); } catch (err) { /* ignore */ }
+  }
+
+  applyLoudnessMatchGain();
+  updateDeltas();
+}
+
+if (loudnessMatchRefreshBtn) {
+  loudnessMatchRefreshBtn.addEventListener('click', () => {
+    refreshLoudnessMatch();
+  });
 }
 
 // Upload handlers
@@ -364,6 +533,36 @@ function handleFiles(files) {
   renderPlaylist();
 }
 
+let playlistPopovers = [];
+
+function initPlaylistPopovers() {
+  // Playlist rows are re-rendered often; dispose old popovers to avoid leaks.
+  try {
+    for (const pop of playlistPopovers) {
+      try { pop.dispose(); } catch (err) { /* ignore */ }
+    }
+  } catch (err) {
+    /* ignore */
+  }
+  playlistPopovers = [];
+
+  if (typeof bootstrap === 'undefined' || !bootstrap?.Popover) return;
+  const els = document.querySelectorAll('[data-bs-toggle="popover"]');
+  els.forEach((el) => {
+    const existing = bootstrap.Popover.getInstance(el);
+    if (existing) existing.dispose();
+    const pop = new bootstrap.Popover(el, {
+      trigger: 'hover focus',
+      placement: el.getAttribute('data-bs-placement') || 'top',
+      container: 'body'
+    });
+    playlistPopovers.push(pop);
+  });
+}
+
+// Initialize any static popovers (e.g., meter controls) on first load.
+initPlaylistPopovers();
+
 // Render playlist
 function renderPlaylist() {
   if (tracks.length === 0) {
@@ -371,17 +570,107 @@ function renderPlaylist() {
     return;
   }
 
+  const playIcon = `
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M8 5v14l11-7z"></path>
+    </svg>
+  `;
+  const playingIcon = `
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M6 5h4v14H6zM14 5h4v14h-4z"></path>
+    </svg>
+  `;
+  const refIcon = `
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"></path>
+    </svg>
+  `;
+  const trashIcon = `
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"></path>
+    </svg>
+  `;
+
+  const currentIsPlaying = (i) => {
+    if (i !== currentIndex) return false;
+    if (!audio) return false;
+    return !audio.paused && !audio.ended;
+  };
+
   playlistBody.innerHTML = tracks.map((track, i) => `
     <div class="playlist-item ${i === currentIndex ? 'active' : ''}" data-index="${i}">
       <div>${i + 1}</div>
       <div>${track.name}</div>
       <div class="playlist-actions">
-        <button onclick="playTrack(${i})">${i === currentIndex ? '▶ Playing' : 'Play'}</button>
-        <button onclick="setReference(${i})">${i === referenceIndex ? 'Ref ✓' : 'Set Ref'}</button>
+        <button
+          class="icon-button ${i === currentIndex ? 'is-active' : ''}"
+          onclick="toggleTrackPlayback(${i})"
+          aria-label="${currentIsPlaying(i) ? 'Pause' : (i === currentIndex ? 'Resume' : 'Play')} ${track.name}"
+          data-bs-toggle="popover"
+          data-bs-placement="top"
+          data-bs-content="${currentIsPlaying(i) ? 'Pause' : (i === currentIndex ? 'Resume' : 'Play')}"
+          type="button"
+        >
+          ${currentIsPlaying(i) ? playingIcon : playIcon}
+        </button>
+        <button
+          class="icon-button ${i === referenceIndex ? 'is-active' : ''}"
+          onclick="setReference(${i})"
+          aria-label="${i === referenceIndex ? 'Reference' : 'Set reference'} ${track.name}"
+          data-bs-toggle="popover"
+          data-bs-placement="top"
+          data-bs-content="${i === referenceIndex ? 'Reference' : 'Set reference'}"
+          type="button"
+        >
+          ${refIcon}
+        </button>
+        <button
+          class="icon-button remove-btn"
+          onclick="removeTrack(${i})"
+          aria-label="Remove ${track.name}"
+          data-bs-toggle="popover"
+          data-bs-placement="top"
+          data-bs-content="Remove"
+          type="button"
+        >
+          ${trashIcon}
+        </button>
       </div>
     </div>
   `).join('');
+
+  initPlaylistPopovers();
 }
+
+window.toggleTrackPlayback = function(index) {
+  initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+
+  // If it's not the current track, start it.
+  if (index !== currentIndex) {
+    window.playTrack(index);
+    return;
+  }
+
+  // If it's the current track, toggle pause/resume without reloading.
+  if (!audio.src) {
+    window.playTrack(index);
+    return;
+  }
+
+  if (audio.paused || audio.ended) {
+    audio.play().catch(err => {
+      console.error('Playback error:', err);
+      alert('Could not play audio. Please try again.');
+    });
+  } else {
+    try { audio.pause(); } catch (err) { /* ignore */ }
+  }
+
+  renderPlaylist();
+};
 
 window.setReference = async function(index) {
   initAudio();
@@ -394,6 +683,7 @@ window.setReference = async function(index) {
     updateReferenceUi();
     renderPlaylist();
     updateDeltas();
+    applyLoudnessMatchGain();
     return;
   }
 
@@ -419,6 +709,7 @@ window.setReference = async function(index) {
     }
   }
 
+  applyLoudnessMatchGain();
   updateDeltas();
 };
 
@@ -442,6 +733,8 @@ window.playTrack = function(index) {
   });
   renderPlaylist();
 
+  applyLoudnessMatchGain();
+
   if (!track.analysis) {
     const runId = ++analysisRunId;
     analyzeTrack(track, runId);
@@ -451,7 +744,62 @@ window.playTrack = function(index) {
     status.textContent = 'Ready';
     status.className = 'status ready';
     displayAnalysis(track.analysis);
+    applyLoudnessMatchGain();
   }
+};
+
+window.removeTrack = function(index) {
+  const track = tracks[index];
+  if (!track) return;
+
+  const wasCurrent = index === currentIndex;
+  const wasReference = index === referenceIndex;
+
+  // Remove from list first (indices shift after this).
+  tracks.splice(index, 1);
+
+  // Adjust indices to account for the removed element.
+  if (wasCurrent) {
+    currentIndex = -1;
+  } else if (currentIndex > index) {
+    currentIndex -= 1;
+  }
+
+  if (wasReference) {
+    referenceIndex = -1;
+  } else if (referenceIndex > index) {
+    referenceIndex -= 1;
+  }
+
+  // If we removed the currently playing track, stop playback and clear UI.
+  if (wasCurrent) {
+    try { audio.pause(); } catch (err) { /* ignore */ }
+    if (audio.src && audio.src.startsWith('blob:')) {
+      try { URL.revokeObjectURL(audio.src); } catch (err) { /* ignore */ }
+    }
+    audio.removeAttribute('src');
+    try { audio.load(); } catch (err) { /* ignore */ }
+
+    // Cancel any in-flight UI analysis and reset panels.
+    analysisRunId += 1;
+    if (analysisPanel) analysisPanel.classList.remove('loading');
+    if (analysisOverlay) analysisOverlay.setAttribute('aria-hidden', 'true');
+    if (status) {
+      status.textContent = 'Ready';
+      status.className = 'status ready';
+    }
+    resetAnalysis();
+  }
+
+  // If we removed the reference track, cancel any in-flight background analysis.
+  if (wasReference) {
+    backgroundAnalysisRunId += 1;
+  }
+
+  updateReferenceUi();
+  renderPlaylist();
+  updateDeltas();
+  applyLoudnessMatchGain();
 };
 
 async function computeTrackAnalysis(track, runId, shouldAbort) {
@@ -764,6 +1112,7 @@ function displayAnalysis(analysis) {
   syncMeterHeight();
   updateReferenceUi();
   updateDeltas();
+  applyLoudnessMatchGain();
 }
 
 // Reset analysis
@@ -911,10 +1260,10 @@ function setupHoverInteractions() {
 }
 
 function syncMeterHeight() {
-  if (!meter || !canvasStack) return;
-  const isNarrow = window.matchMedia('(max-width: 960px)').matches;
+  if (!meterStack || !canvasStack) return;
+  const isNarrow = window.matchMedia('(max-width: 1100px)').matches;
   if (isNarrow) {
-    meter.style.height = 'auto';
+    meterStack.style.height = 'auto';
     if (leftColumn) {
       leftColumn.style.height = 'auto';
       leftColumn.style.maxHeight = 'none';
@@ -923,7 +1272,7 @@ function syncMeterHeight() {
   }
   const rect = canvasStack.getBoundingClientRect();
   if (rect.height > 0) {
-    meter.style.height = rect.height + 'px';
+    meterStack.style.height = rect.height + 'px';
     if (leftColumn) {
       leftColumn.style.height = rect.height + 'px';
       leftColumn.style.maxHeight = rect.height + 'px';
@@ -944,6 +1293,7 @@ let smoothLufs = -60;
 let timeDomainBytes = null;
 let timeDomainFloats = null;
 let freqBuffer = null;
+let inputTimeDomainBytes = null;
 
 function draw() {
   requestAnimationFrame(draw);
@@ -962,6 +1312,34 @@ function draw() {
   }
 
   analyser.getByteTimeDomainData(timeDomainBytes);
+
+  // Input meter (pre loudness-match gain)
+  if (inputAnalyser && inputMeterFill && inputMeterText) {
+    const inLen = inputAnalyser.fftSize;
+    if (!inputTimeDomainBytes || inputTimeDomainBytes.length !== inLen) {
+      inputTimeDomainBytes = new Uint8Array(inLen);
+    }
+    inputAnalyser.getByteTimeDomainData(inputTimeDomainBytes);
+    let inSumSq = 0;
+    for (let i = 0; i < inLen; i++) {
+      const s = (inputTimeDomainBytes[i] - 128) / 128;
+      inSumSq += s * s;
+    }
+    const inRms = Math.sqrt(inSumSq / Math.max(1, inLen));
+    const inDbfs = inRms > 1e-6 ? 20 * Math.log10(inRms) : -Infinity;
+    const clampedIn = Math.max(-60, Math.min(0, inDbfs));
+    const inPercent = ((clampedIn + 60) / 60) * 100;
+    inputMeterFill.style.height = Math.max(0, Math.min(100, inPercent)) + '%';
+    inputMeterText.textContent = Number.isFinite(clampedIn) ? `${clampedIn.toFixed(1)}` : '-inf';
+
+    if (clampedIn > -3) {
+      inputMeterFill.style.background = '#f44336';
+    } else if (clampedIn > -12) {
+      inputMeterFill.style.background = '#ffeb3b';
+    } else {
+      inputMeterFill.style.background = '#4caf50';
+    }
+  }
 
   let sumSq = 0;
   for (let i = 0; i < bufferLength; i++) {
@@ -1007,8 +1385,8 @@ function draw() {
 
   meterFill.style.height = Math.max(0, Math.min(100, percent)) + '%';
   meterText.textContent = hasSignal && Number.isFinite(clampedLufs)
-    ? clampedLufs.toFixed(1) + ' LUFS'
-    : '-inf LUFS';
+    ? clampedLufs.toFixed(1)
+    : '-inf';
 
   if (clampedLufs > -14) {
     meterFill.style.background = '#f44336';
@@ -1017,6 +1395,11 @@ function draw() {
   } else {
     meterFill.style.background = '#4caf50';
   }
+
+  // Output meter (post gain, dBFS based on RMS)
+  const outDbfs = rms > 1e-6 ? 20 * Math.log10(rms) : -Infinity;
+  updateOutputMeterUi(outDbfs);
+
 
   // Waveform
   waveCtx.fillStyle = '#000';
@@ -1162,6 +1545,16 @@ audio.addEventListener('play', () => {
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(err => console.warn('AudioContext resume failed:', err));
   }
+
+  renderPlaylist();
+});
+
+audio.addEventListener('pause', () => {
+  renderPlaylist();
+});
+
+audio.addEventListener('ended', () => {
+  renderPlaylist();
 });
 
 // Wait for Meyda to load

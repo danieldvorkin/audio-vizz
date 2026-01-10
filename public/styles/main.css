@@ -24,6 +24,33 @@ body {
   color: #fff;
 }
 
+.meterlab-switch {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  cursor: help;
+}
+.meterlab-switch .form-check-label {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.9);
+  user-select: none;
+}
+.meterlab-switch .form-check-input {
+  cursor: pointer;
+  margin-left: 0px !important;
+}
+
+.meterlab-switch-readout {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255,255,255,0.12);
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.75);
+  white-space: nowrap;
+}
+
 .app-header {
   display: flex;
   align-items: center;
@@ -280,7 +307,7 @@ h1 { margin-top: 0; }
 
 .post-analysis {
   display: grid;
-  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.15fr);
   gap: 20px;
   align-items: stretch;
   margin-top: 24px;
@@ -291,6 +318,7 @@ h1 { margin-top: 0; }
   gap: 20px;
   overflow: hidden;
   padding-right: 6px;
+  min-width: 0;
   min-height: 0;
 }
 .left-column::-webkit-scrollbar {
@@ -304,11 +332,67 @@ h1 { margin-top: 0; }
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-width: 0;
   min-height: 0;
 }
 .visualizer-stack {
   display: flex;
   gap: 16px;
+  align-items: stretch;
+}
+
+.meter-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 0 0 290px;
+  width: 290px;
+}
+
+.meter-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.meter-controls .meterlab-switch {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.meter-controls .meterlab-switch .form-check-label {
+  white-space: nowrap;
+}
+
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+}
+.icon-button:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.18);
+}
+.icon-button .icon {
+  width: 18px;
+  height: 18px;
+  fill: rgba(255,255,255,0.92);
+}
+
+.meter-stack {
+  display: flex;
+  gap: 10px;
   align-items: stretch;
 }
 .canvas-stack {
@@ -362,31 +446,92 @@ canvas.hover-crosshair {
 }
 
 .meter {
-  flex: 0 0 50px;
-  width: 50px;
+  flex: 0 0 82px;
+  width: 82px;
   height: 100%;
-  background: linear-gradient(180deg, #1a1a1a, #0a0a0a);
-  border: 1px solid #555;
-  border-radius: 6px;
-  position: relative;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 10px;
 }
+
+.meter-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255,255,255,0.75);
+  text-align: center;
+}
+
+.meter-body {
+  flex: 1;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.2));
+}
+
+/* Tick scale overlay (10% steps) + a slightly stronger midline */
+.meter-body::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    repeating-linear-gradient(
+      to top,
+      rgba(255,255,255,0.10) 0,
+      rgba(255,255,255,0.10) 1px,
+      transparent 1px,
+      transparent 10%
+    );
+  pointer-events: none;
+  z-index: 2;
+}
+.meter-body::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: rgba(255,255,255,0.18);
+  pointer-events: none;
+  z-index: 2;
+}
+
 .meter-fill {
   position: absolute;
+  left: 0;
+  right: 0;
   bottom: 0;
-  width: 100%;
+  height: 0%;
   background: #4caf50;
-  transition: height 0.1s, background 0.1s;
+  transition: height 0.08s, background 0.08s;
+  z-index: 1;
 }
+
 .meter-text {
   position: absolute;
+  left: 6px;
+  right: 6px;
   top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(-90deg);
-  font-size: 0.8rem;
+  transform: translateY(-50%);
+  font-size: 0.82rem;
+  font-weight: 600;
   white-space: nowrap;
-  color: #fff;
-  text-shadow: 0 0 4px #000;
+  color: rgba(255,255,255,0.96);
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.85);
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  padding: 3px 6px;
+  pointer-events: none;
+  z-index: 3;
 }
 
 .playlist {
@@ -402,7 +547,7 @@ canvas.hover-crosshair {
 }
 .playlist-header {
   display: grid;
-  grid-template-columns: 50px 1fr 170px;
+  grid-template-columns: 50px 1fr 150px;
   padding: 12px;
   background: rgba(255,255,255,0.05);
   font-weight: 600;
@@ -414,7 +559,7 @@ canvas.hover-crosshair {
 }
 .playlist-item {
   display: grid;
-  grid-template-columns: 50px 1fr 170px;
+  grid-template-columns: 50px 1fr 150px;
   padding: 12px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
   align-items: center;
@@ -424,10 +569,31 @@ canvas.hover-crosshair {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .playlist-actions button {
   padding: 6px 10px;
   font-size: 0.85rem;
+}
+
+.playlist-actions .icon-button {
+  /* inherit base icon-button styles */
+}
+.playlist-actions .icon-button:hover {
+  /* inherit base hover styles */
+}
+.playlist-actions .icon-button.is-active {
+  background: rgba(74, 158, 255, 0.20);
+  border-color: rgba(74, 158, 255, 0.45);
+}
+
+.playlist-actions .remove-btn {
+  background: rgba(244, 67, 54, 0.85);
+  border-color: rgba(244, 67, 54, 0.55);
+}
+.playlist-actions .remove-btn:hover {
+  background: rgba(244, 67, 54, 0.95);
+  border-color: rgba(244, 67, 54, 0.75);
 }
 
 .metric-subvalue {
@@ -495,7 +661,7 @@ audio {
   margin-top: 20px;
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1100px) {
   .post-analysis {
     display: flex;
     flex-direction: column;

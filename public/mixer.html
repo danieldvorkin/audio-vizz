@@ -42,9 +42,11 @@
       <div class="spinner" aria-hidden="true"></div>
       <span>Analyzing...</span>
     </div>
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px;">
       <h3 style="margin: 0;">Track Analysis</h3>
-      <span class="status" id="status">Idle</span>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span class="status" id="status">Idle</span>
+      </div>
     </div>
     <div class="analysis-toolbar">
       <div class="toolbar-chip" tabindex="0" data-tooltip="Brightness reflects the spectral centroid. Lower values sound warmer, higher values feel brighter.">
@@ -149,9 +151,51 @@
 
     <div class="right-column">
       <div class="visualizer-stack">
-        <div class="meter">
-          <div class="meter-fill" id="meterFill"></div>
-          <div class="meter-text" id="meterText">-inf LUFS</div>
+        <div class="meter-column" aria-label="Meter column">
+          <div class="meter-controls">
+            <div class="form-check form-switch meterlab-switch" data-tooltip="When enabled, playback gain is adjusted so the current track matches the reference track loudness (rough LUFS match).">
+              <input class="form-check-input" type="checkbox" role="switch" id="loudnessMatchToggle">
+              <label class="form-check-label" for="loudnessMatchToggle">Gain Match</label>
+              <span class="meterlab-switch-readout" id="loudnessMatchAmount" aria-live="polite">--</span>
+            </div>
+            <button
+              id="loudnessMatchRefresh"
+              class="icon-button"
+              type="button"
+              aria-label="Refresh loudness match"
+              data-bs-toggle="popover"
+              data-bs-placement="top"
+              data-bs-content="Refresh gain-match"
+            >
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M17.65 6.35A7.95 7.95 0 0012 4V1L7 6l5 5V7a5 5 0 11-5 5H5a7 7 0 107.75-6.95 7.9 7.9 0 014.9 2.3z"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div class="meter-stack" aria-label="Meters">
+            <div class="meter" aria-label="Loudness">
+              <div class="meter-label">LUFS</div>
+              <div class="meter-body" role="img" aria-label="Loudness meter">
+                <div class="meter-fill" id="meterFill"></div>
+                <div class="meter-text" id="meterText">-inf</div>
+              </div>
+            </div>
+            <div class="meter" aria-label="Input level">
+              <div class="meter-label">Input</div>
+              <div class="meter-body" role="img" aria-label="Input level meter">
+                <div class="meter-fill" id="inputMeterFill"></div>
+                <div class="meter-text" id="inputMeterText">-inf</div>
+              </div>
+            </div>
+            <div class="meter" aria-label="Output level">
+              <div class="meter-label">Output</div>
+              <div class="meter-body" role="img" aria-label="Output level meter">
+                <div class="meter-fill" id="outputMeterFill"></div>
+                <div class="meter-text" id="outputMeterText">-inf</div>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="canvas-stack">
             <div class="canvas-wrapper">
