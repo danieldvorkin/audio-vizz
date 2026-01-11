@@ -13,6 +13,180 @@ let referenceIndex = -1;
 let loudnessMatchEnabled = false;
 let loudnessMatchDeltaDb = null;
 
+// Persistence (IndexedDB)
+// localStorage/sessionStorage can't reliably store large audio files.
+// IndexedDB supports Blob storage and survives refresh.
+const TRACK_DB_NAME = 'meterlab';
+const TRACK_DB_VERSION = 1;
+const TRACK_STORE = 'tracks';
+let trackDbPromise = null;
+
+function openTrackDb() {
+  if (trackDbPromise) return trackDbPromise;
+  trackDbPromise = new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB not available in this browser.'));
+      return;
+    }
+    const req = indexedDB.open(TRACK_DB_NAME, TRACK_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(TRACK_STORE)) {
+        const store = db.createObjectStore(TRACK_STORE, { keyPath: 'id' });
+        store.createIndex('fingerprint', 'fingerprint', { unique: true });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+  });
+  return trackDbPromise;
+}
+
+function createId() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch {
+    /* ignore */
+  }
+  return `t_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function toFingerprint(file) {
+  const name = file?.name || '';
+  const size = Number.isFinite(file?.size) ? file.size : 0;
+  const lastModified = Number.isFinite(file?.lastModified) ? file.lastModified : 0;
+  return `${name}|${size}|${lastModified}`;
+}
+
+async function dbPutTrackRecord(record) {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRACK_STORE, 'readwrite');
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+    tx.objectStore(TRACK_STORE).put(record);
+  });
+}
+
+async function dbDeleteTrackRecord(id) {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRACK_STORE, 'readwrite');
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+    tx.objectStore(TRACK_STORE).delete(id);
+  });
+}
+
+async function dbGetAllTrackRecords() {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRACK_STORE, 'readonly');
+    const req = tx.objectStore(TRACK_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error || new Error('Failed to read tracks from IndexedDB'));
+  });
+}
+
+async function dbGetTrackRecordByFingerprint(fingerprint) {
+  if (!fingerprint) return null;
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRACK_STORE, 'readonly');
+    const store = tx.objectStore(TRACK_STORE);
+    let index;
+    try {
+      index = store.index('fingerprint');
+    } catch (err) {
+      resolve(null);
+      return;
+    }
+    const req = index.get(fingerprint);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error || new Error('Failed to read track by fingerprint'));
+  });
+}
+
+async function persistTrack(track) {
+  if (!track?.file) return;
+  const blob = track.file instanceof Blob ? track.file : null;
+  if (!blob) return;
+
+  if (!track.id) track.id = createId();
+  if (!track.fingerprint) track.fingerprint = toFingerprint(track.file);
+  if (!track.name && track.file?.name) track.name = track.file.name;
+  if (!track.size && Number.isFinite(track.file?.size)) track.size = track.file.size;
+  if (!track.type && track.file?.type) track.type = track.file.type;
+  if (!track.lastModified && Number.isFinite(track.file?.lastModified)) track.lastModified = track.file.lastModified;
+
+  const fingerprint = track.fingerprint;
+  try {
+    // If this file was already saved before, reuse the existing record id.
+    // Prevents failing writes due to the unique fingerprint index.
+    const existing = await dbGetTrackRecordByFingerprint(fingerprint);
+    if (existing?.id && existing.id !== track.id) {
+      track.id = existing.id;
+    }
+
+    await dbPutTrackRecord({
+      id: track.id,
+      fingerprint,
+      name: track.name,
+      size: track.size,
+      type: blob.type || track.type || '',
+      lastModified: Number.isFinite(track.lastModified) ? track.lastModified : (track.file?.lastModified || 0),
+      blob,
+      analysis: track.analysis || null,
+      savedAt: Date.now()
+    });
+    console.debug('[MeterLab] Persisted track:', track.name);
+  } catch (err) {
+    console.warn('Failed to persist track:', err);
+  }
+}
+
+async function restoreTracksFromDb() {
+  try {
+    const records = await dbGetAllTrackRecords();
+    if (!Array.isArray(records) || records.length === 0) {
+      console.debug('[MeterLab] No persisted tracks found');
+      return;
+    }
+
+    records.sort((a, b) => (a?.savedAt || 0) - (b?.savedAt || 0));
+
+    for (const r of records) {
+      if (!r || !r.blob || !r.name) continue;
+      const file = new File([r.blob], r.name, {
+        type: r.type || r.blob.type || '',
+        lastModified: r.lastModified || Date.now()
+      });
+      const fingerprint = r.fingerprint || toFingerprint(file);
+      if (tracks.some(t => (t.fingerprint && t.fingerprint === fingerprint) || t.id === r.id)) continue;
+      tracks.push({
+        id: r.id,
+        fingerprint,
+        name: r.name,
+        size: r.size || file.size,
+        type: r.type || file.type || '',
+        lastModified: r.lastModified || file.lastModified || 0,
+        file,
+        analysis: r.analysis || null
+      });
+    }
+
+    if (tracks.length) {
+      renderPlaylist();
+      updateReferenceUi();
+      updateDeltas();
+      applyLoudnessMatchGain();
+      console.debug('[MeterLab] Restored tracks:', tracks.length);
+    }
+  } catch (err) {
+    console.warn('Failed to restore tracks from IndexedDB:', err);
+  }
+}
+
 // Elements
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
@@ -334,6 +508,30 @@ function clampDb(valueDb, minDb, maxDb) {
   return Math.min(maxDb, Math.max(minDb, valueDb));
 }
 
+const MOBILE_METER_MEDIA = '(max-width: 720px)';
+
+function isHorizontalMeters() {
+  try {
+    return typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia(MOBILE_METER_MEDIA).matches;
+  } catch {
+    return false;
+  }
+}
+
+function setMeterFillPercent(fillEl, percent) {
+  if (!fillEl) return;
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+  if (isHorizontalMeters()) {
+    fillEl.style.width = clamped + '%';
+    fillEl.style.height = '100%';
+  } else {
+    fillEl.style.height = clamped + '%';
+    fillEl.style.width = '100%';
+  }
+}
+
 function setPlaybackGainLinear(value) {
   if (!audioCtx || !gainNode) return;
   const safe = Number.isFinite(value) ? Math.max(0, Math.min(8, value)) : 1;
@@ -365,7 +563,7 @@ function updateOutputMeterUi(outputDbfs) {
   const clamped = Number.isFinite(outputDbfs) ? Math.max(-60, Math.min(0, outputDbfs)) : -Infinity;
   const percent = Number.isFinite(clamped) ? ((clamped + 60) / 60) * 100 : 0;
 
-  outputMeterFill.style.height = Math.max(0, Math.min(100, percent)) + '%';
+  setMeterFillPercent(outputMeterFill, percent);
   outputMeterText.textContent = Number.isFinite(clamped) ? `${clamped.toFixed(1)}` : '-inf';
 
   if (clamped > -3) {
@@ -516,19 +714,38 @@ uploadArea.addEventListener('drop', (e) => {
 });
 
 // Handle files
-function handleFiles(files) {
+async function handleFiles(files) {
   if (files.length === 0) return;
 
+  const persistPromises = [];
+
   files.forEach(file => {
-    if (!tracks.some(t => t.name === file.name && t.size === file.size)) {
-      tracks.push({
-        name: file.name,
-        size: file.size,
-        file: file,
-        analysis: null
-      });
-    }
+    if (!file) return;
+    const fingerprint = toFingerprint(file);
+    if (tracks.some(t => (t.fingerprint && t.fingerprint === fingerprint) || (t.name === file.name && t.size === file.size))) return;
+
+    const track = {
+      id: createId(),
+      fingerprint,
+      name: file.name,
+      size: file.size,
+      type: file.type || '',
+      lastModified: Number.isFinite(file.lastModified) ? file.lastModified : 0,
+      file,
+      analysis: null
+    };
+    tracks.push(track);
+    persistPromises.push(persistTrack(track));
   });
+
+  // Best-effort: try to complete the initial DB writes before returning.
+  // (If the user refreshes immediately after upload, this reduces the chance
+  // that the async transaction hasn't committed yet.)
+  try {
+    await Promise.all(persistPromises);
+  } catch (err) {
+    /* ignore */
+  }
 
   renderPlaylist();
 }
@@ -562,6 +779,9 @@ function initPlaylistPopovers() {
 
 // Initialize any static popovers (e.g., meter controls) on first load.
 initPlaylistPopovers();
+
+// Restore persisted playlist tracks (survives refresh).
+restoreTracksFromDb();
 
 // Render playlist
 function renderPlaylist() {
@@ -703,7 +923,10 @@ window.setReference = async function(index) {
     try {
       const analysis = await computeTrackAnalysis(track, runId, () => runId !== backgroundAnalysisRunId);
       if (runId !== backgroundAnalysisRunId) return;
-      if (analysis) track.analysis = analysis;
+      if (analysis) {
+        track.analysis = analysis;
+        persistTrack(track);
+      }
     } catch (err) {
       console.warn('Reference analysis failed:', err);
     }
@@ -757,6 +980,12 @@ window.removeTrack = function(index) {
 
   // Remove from list first (indices shift after this).
   tracks.splice(index, 1);
+
+  if (track?.id) {
+    dbDeleteTrackRecord(track.id).catch((err) => {
+      console.warn('Failed to delete persisted track:', err);
+    });
+  }
 
   // Adjust indices to account for the removed element.
   if (wasCurrent) {
@@ -993,6 +1222,7 @@ async function analyzeTrack(track, runId) {
     if (!analysis || thisRunId !== analysisRunId) return;
 
     track.analysis = analysis;
+    persistTrack(track);
 
     if (track === tracks[currentIndex]) {
       displayAnalysis(analysis);
@@ -1272,11 +1502,22 @@ function syncMeterHeight() {
   }
   const rect = canvasStack.getBoundingClientRect();
   if (rect.height > 0) {
-    meterStack.style.height = rect.height + 'px';
-    if (leftColumn) {
-      leftColumn.style.height = rect.height + 'px';
-      leftColumn.style.maxHeight = rect.height + 'px';
-    }
+    const setHeight = (el, targetHeight) => {
+      if (!el) return;
+      const styles = window.getComputedStyle(el);
+      const paddingTop = parseFloat(styles.paddingTop) || 0;
+      const paddingBottom = parseFloat(styles.paddingBottom) || 0;
+      const borderTop = parseFloat(styles.borderTopWidth) || 0;
+      const borderBottom = parseFloat(styles.borderBottomWidth) || 0;
+      const extra = paddingTop + paddingBottom + borderTop + borderBottom;
+      const boxSizing = styles.boxSizing;
+      const height = boxSizing === 'border-box' ? targetHeight : Math.max(0, targetHeight - extra);
+      el.style.height = height + 'px';
+      el.style.maxHeight = height + 'px';
+    };
+
+    setHeight(meterStack, rect.height);
+    setHeight(leftColumn, rect.height);
   }
 }
 
@@ -1329,7 +1570,7 @@ function draw() {
     const inDbfs = inRms > 1e-6 ? 20 * Math.log10(inRms) : -Infinity;
     const clampedIn = Math.max(-60, Math.min(0, inDbfs));
     const inPercent = ((clampedIn + 60) / 60) * 100;
-    inputMeterFill.style.height = Math.max(0, Math.min(100, inPercent)) + '%';
+    setMeterFillPercent(inputMeterFill, inPercent);
     inputMeterText.textContent = Number.isFinite(clampedIn) ? `${clampedIn.toFixed(1)}` : '-inf';
 
     if (clampedIn > -3) {
@@ -1383,7 +1624,7 @@ function draw() {
   const percent = ((clampedLufs + 60) / 60) * 100;
   const hasSignal = Number.isFinite(rms) && rms > 1e-5;
 
-  meterFill.style.height = Math.max(0, Math.min(100, percent)) + '%';
+  setMeterFillPercent(meterFill, percent);
   meterText.textContent = hasSignal && Number.isFinite(clampedLufs)
     ? clampedLufs.toFixed(1)
     : '-inf';
