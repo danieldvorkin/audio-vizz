@@ -410,7 +410,7 @@ function computeScoreAgainstTargets(analysis, targets, tolerances, includeBpm = 
 
   const parts = Object.entries(perMetric).map(([k, v]) => ({ metric: k, score: v, weight: SCORE_WEIGHTS[k] || 0 }));
   const score = weightedAverageScore(parts);
-  return { score, perMetric };
+  return { score, perMetric, parts };
 }
 
 function computeSongScore(current, reference, genreKey) {
@@ -428,6 +428,8 @@ function computeSongScore(current, reference, genreKey) {
 
   let referenceScore = null;
   let genreScore = null;
+  let currentGenreScore = null;
+  let referenceGenreScore = null;
 
   if (hasReference) {
     const refTargets = {
@@ -451,6 +453,10 @@ function computeSongScore(current, reference, genreKey) {
 
   if (genreProfile) {
     genreScore = computeScoreAgainstTargets(current, genreProfile.targets, genreProfile.tolerances, false);
+    currentGenreScore = genreScore;
+    if (hasReference) {
+      referenceGenreScore = computeScoreAgainstTargets(reference, genreProfile.targets, genreProfile.tolerances, false);
+    }
   }
 
   let finalScore = null;
@@ -522,7 +528,9 @@ function computeSongScore(current, reference, genreKey) {
     reference: hasReference ? reference : null,
     genreProfile,
     referenceScore,
-    genreScore
+    genreScore,
+    currentGenreScore,
+    referenceGenreScore
   };
 
   return {
@@ -559,7 +567,6 @@ function updateSongScoreUi() {
     if (!details) {
       songScoreDetailsEl.textContent = '--';
     } else {
-      const rows = [];
       const metricMeta = [
         {
           key: 'loudness',
@@ -590,47 +597,88 @@ function updateSongScoreUi() {
           label: 'Tonal balance',
           fmt: (v) => Number.isFinite(v) ? formatPercent(v) : '--',
           unitDelta: ''
-        },
-        {
-          key: 'bpm',
-          label: 'Tempo',
-          fmt: (v) => Number.isFinite(v) ? `${Math.round(v)} BPM` : '--',
-          unitDelta: ' BPM'
         }
       ];
+
+      const wantsGenre = !!details.genreProfile && !!details.currentGenreScore?.score;
+      const wantsReferenceMatch = !!details.reference && !!details.referenceScore?.score;
+      const hasReferenceForGenre = wantsGenre && !!details.reference && !!details.referenceGenreScore?.score;
 
       const currentA = details.current || {};
       const refA = details.reference || {};
 
-      const wantsGenre = !!details.genreScore?.score && details.genreProfile;
-      const wantsRef = !!details.referenceScore?.score && details.reference;
+      const genreName = details.genreProfile?.name || 'Genre';
+      const genreCurrent = wantsGenre ? details.currentGenreScore?.score : null;
+      const genreReference = hasReferenceForGenre ? details.referenceGenreScore?.score : null;
 
+      const summaryBits = [];
+      summaryBits.push(`<div class="score-kpi"><strong>Overall</strong>: ${Math.round(rounded)} (${result.label})</div>`);
+      if (wantsReferenceMatch) {
+        summaryBits.push(`<div class="score-kpi"><strong>Ref match</strong>: ${Math.round(details.referenceScore.score)} (how close you are to the reference)</div>`);
+      }
+      if (wantsGenre) {
+        const gCur = Number.isFinite(genreCurrent) ? Math.round(genreCurrent) : null;
+        const gRef = Number.isFinite(genreReference) ? Math.round(genreReference) : null;
+        if (gCur != null && gRef != null) {
+          const delta = gCur - gRef;
+          const deltaText = `${delta > 0 ? '+' : (delta < 0 ? '−' : '±')}${Math.abs(delta)}`;
+          summaryBits.push(`<div class="score-kpi"><strong>${genreName}</strong>: Current ${gCur} vs Ref ${gRef} (Δ ${deltaText})</div>`);
+        } else if (gCur != null) {
+          summaryBits.push(`<div class="score-kpi"><strong>${genreName}</strong>: Current ${gCur}</div>`);
+        }
+      }
+
+      const rows = [];
       for (const m of metricMeta) {
-        if (m.key === 'bpm' && !wantsRef) continue;
+        const weight = SCORE_WEIGHTS[m.key] || 0;
         const currentVal = currentA[m.key];
-        const refTarget = wantsRef ? refA[m.key] : null;
-        const genreTarget = wantsGenre ? details.genreProfile.targets[m.key] : null;
+        const refVal = refA[m.key];
 
         const parts = [];
         parts.push(`<strong>Current</strong>: ${m.fmt(currentVal)}`);
 
-        if (wantsRef && Number.isFinite(refTarget) && Number.isFinite(currentVal)) {
-          const delta = currentVal - refTarget;
-          const deltaText = m.key === 'flatness'
-            ? `${delta > 0 ? '+' : (delta < 0 ? '−' : '±')}${Math.abs(delta).toFixed(2)}`
-            : formatMaybeSignedDelta(delta, m.unitDelta);
-          parts.push(`<strong>Ref</strong>: ${m.fmt(refTarget)} (Δ ${deltaText})`);
-          const tip = advisoryForMetric(m.key, delta, 'ref');
-          if (tip) parts.push(`<span>${tip}</span>`);
-        } else if (wantsGenre && Number.isFinite(genreTarget) && Number.isFinite(currentVal)) {
-          const delta = currentVal - genreTarget;
-          const deltaText = m.key === 'flatness'
-            ? `${delta > 0 ? '+' : (delta < 0 ? '−' : '±')}${Math.abs(delta).toFixed(2)}`
-            : formatMaybeSignedDelta(delta, m.unitDelta);
-          parts.push(`<strong>Target</strong>: ${m.fmt(genreTarget)} (Δ ${deltaText})`);
-          const tip = advisoryForMetric(m.key, delta, 'genre');
-          if (tip) parts.push(`<span>${tip}</span>`);
+        let tip = null;
+
+        if (wantsReferenceMatch && Number.isFinite(refVal) && Number.isFinite(currentVal)) {
+          const deltaRef = currentVal - refVal;
+          const deltaTextRef = m.key === 'flatness'
+            ? `${deltaRef > 0 ? '+' : (deltaRef < 0 ? '−' : '±')}${Math.abs(deltaRef).toFixed(2)}`
+            : formatMaybeSignedDelta(deltaRef, m.unitDelta);
+          parts.push(`<strong>Ref</strong>: ${m.fmt(refVal)} (Δ ${deltaTextRef})`);
+          tip = advisoryForMetric(m.key, deltaRef, 'ref');
         }
+
+        if (wantsGenre) {
+          const target = details.genreProfile.targets[m.key];
+          const tol = details.genreProfile.tolerances[m.key];
+          if (Number.isFinite(target) && Number.isFinite(currentVal) && Number.isFinite(tol)) {
+            const deltaTarget = currentVal - target;
+            const currentMetricScore = metricScore(currentVal, target, tol);
+            const refMetricScore = (hasReferenceForGenre && Number.isFinite(refVal)) ? metricScore(refVal, target, tol) : null;
+
+            const deltaTextTarget = m.key === 'flatness'
+              ? `${deltaTarget > 0 ? '+' : (deltaTarget < 0 ? '−' : '±')}${Math.abs(deltaTarget).toFixed(2)}`
+              : formatMaybeSignedDelta(deltaTarget, m.unitDelta);
+
+            parts.push(`<strong>Target</strong>: ${m.fmt(target)} (Δ ${deltaTextTarget})`);
+
+            const scoreText = Number.isFinite(currentMetricScore)
+              ? `${Math.round(currentMetricScore)}`
+              : '--';
+            const refScoreText = Number.isFinite(refMetricScore)
+              ? `${Math.round(refMetricScore)}`
+              : '--';
+
+            const weightPct = Math.round(weight * 100);
+            parts.push(`<strong>Metric score</strong>: ${scoreText}${hasReferenceForGenre ? ` (Ref ${refScoreText})` : ''} · <strong>Weight</strong>: ${weightPct}%`);
+
+            const targetTip = advisoryForMetric(m.key, deltaTarget, 'genre');
+            // Prefer the more actionable message (genre guidance), but keep the ref hint if no genre guidance.
+            if (targetTip) tip = targetTip;
+          }
+        }
+
+        if (tip) parts.push(`<span>${tip}</span>`);
 
         rows.push(`
           <div class="score-detail-row">
@@ -640,10 +688,13 @@ function updateSongScoreUi() {
         `);
       }
 
-      if (!rows.length) {
+      if (!rows.length && !summaryBits.length) {
         songScoreDetailsEl.textContent = '--';
       } else {
-        songScoreDetailsEl.innerHTML = rows.join('');
+        const summaryHtml = summaryBits.length
+          ? `<div class="score-kpi-row">${summaryBits.join('')}</div>`
+          : '';
+        songScoreDetailsEl.innerHTML = `${summaryHtml}${rows.join('')}`;
       }
     }
   }

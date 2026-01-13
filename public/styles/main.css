@@ -233,6 +233,21 @@ h1 { margin-top: 0; }
   font-size: 0.9rem;
   color: rgba(255,255,255,0.78);
 }
+.score-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+.score-kpi {
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(74, 158, 255, 0.08);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  color: rgba(255,255,255,0.82);
+}
+.score-kpi strong {
+  color: rgba(255,255,255,0.92);
+}
 .score-detail-row {
   display: grid;
   grid-template-columns: 140px 1fr;
