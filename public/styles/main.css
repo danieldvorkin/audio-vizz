@@ -2,7 +2,7 @@
 body {
   margin: 0;
   padding: 20px;
-  padding-bottom: 110px;
+  padding-bottom: 150px;
   background: #121212;
   color: #fff;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -17,14 +17,138 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 10px 14px;
-  background: rgba(18,18,18,0.92);
-  border-top: 1px solid rgba(255,255,255,0.10);
-  backdrop-filter: blur(10px);
+  padding: 12px 14px;
+  background: linear-gradient(180deg, rgba(18,18,18,0.92), rgba(18,18,18,0.96));
+  border-top: 1px solid rgba(255,255,255,0.12);
+  backdrop-filter: blur(14px);
   z-index: 50;
 }
-.player-bar audio {
+
+.player-inner {
+  display: grid;
+  grid-template-columns: 260px 1fr 210px;
+  gap: 12px;
+  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.player-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.player-logo {
+  opacity: 0.95;
+}
+.player-now {
+  min-width: 0;
+}
+.player-now-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.60);
+}
+.player-now-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: rgba(255,255,255,0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-main {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.player-transport {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.player-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.75);
+}
+
+.player-wave-wrap {
+  position: relative;
+  height: 44px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+}
+
+.player-wave {
   width: 100%;
+  height: 44px;
+  display: block;
+}
+
+.player-seek {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 44px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.player-right {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.player-vol {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+}
+
+.player-vol-icon {
+  width: 18px;
+  height: 18px;
+  fill: rgba(255,255,255,0.80);
+}
+
+.player-vol-range {
+  width: 120px;
+  accent-color: #4a9eff;
+}
+
+@media (max-width: 940px) {
+  .player-inner {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .player-main {
+    grid-template-columns: 150px 1fr;
+  }
+  .player-right {
+    justify-content: flex-start;
+  }
 }
 
 .meterlab-navbar {

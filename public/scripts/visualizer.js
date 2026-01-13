@@ -228,6 +228,8 @@ async function restoreTracksFromDb() {
       updateReferenceUi();
       updateDeltas();
       applyLoudnessMatchGain();
+      updatePlayerNowPlaying();
+      updatePlayerTransportUi();
       console.debug('[MeterLab] Restored tracks:', tracks.length);
     }
   } catch (err) {
@@ -282,6 +284,17 @@ const reanalyzeBtn = document.getElementById('reanalyzeBtn');
 const loudnessMatchToggle = document.getElementById('loudnessMatchToggle');
 const loudnessMatchAmountEl = document.getElementById('loudnessMatchAmount');
 const loudnessMatchRefreshBtn = document.getElementById('loudnessMatchRefresh');
+
+// Custom player bar
+const playerTrackTitleEl = document.getElementById('playerTrackTitle');
+const playerPlayBtn = document.getElementById('playerPlayBtn');
+const playerPlayIconPath = document.getElementById('playerPlayIcon');
+const playerPrevBtn = document.getElementById('playerPrevBtn');
+const playerNextBtn = document.getElementById('playerNextBtn');
+const playerSeek = document.getElementById('playerSeek');
+const playerTimeEl = document.getElementById('playerTime');
+const playerVolume = document.getElementById('playerVolume');
+const playerWaveCanvas = document.getElementById('playerWave');
 
 // Song score elements
 const genreSelect = document.getElementById('genreSelect');
@@ -1265,6 +1278,55 @@ function isCurrentlyPlaying() {
   return !audio.paused && !audio.ended;
 }
 
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+function updatePlayerNowPlaying() {
+  if (!playerTrackTitleEl) return;
+  const track = (currentIndex >= 0 && tracks[currentIndex]) ? tracks[currentIndex] : null;
+  playerTrackTitleEl.textContent = track ? track.name : 'No track selected';
+}
+
+function setPlayerPlayIcon(isPlaying) {
+  if (!playerPlayIconPath) return;
+  playerPlayIconPath.setAttribute('d', isPlaying
+    ? 'M7 6h3v12H7V6zm7 0h3v12h-3V6z'
+    : 'M8 5v14l11-7z');
+}
+
+function updatePlayerTransportUi() {
+  if (!audio) return;
+  if (playerTimeEl) {
+    const cur = audio.currentTime || 0;
+    const dur = Number.isFinite(audio.duration) ? audio.duration : 0;
+    playerTimeEl.textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
+  }
+
+  if (playerSeek) {
+    const dur = Number.isFinite(audio.duration) ? audio.duration : 0;
+    if (dur > 0) {
+      const v = clamp(Math.round((audio.currentTime / dur) * 1000), 0, 1000);
+      playerSeek.value = String(v);
+    } else {
+      playerSeek.value = '0';
+    }
+  }
+
+  setPlayerPlayIcon(isCurrentlyPlaying());
+}
+
+function seekToSliderValue(value) {
+  if (!audio) return;
+  const dur = Number.isFinite(audio.duration) ? audio.duration : 0;
+  if (!(dur > 0)) return;
+  const t = clamp(Number(value) / 1000, 0, 1) * dur;
+  audio.currentTime = t;
+}
+
 function updateReanalyzeButtonState() {
   if (!reanalyzeBtn) return;
   reanalyzeBtn.disabled = !(currentIndex >= 0 && isCurrentlyPlaying());
@@ -1294,6 +1356,63 @@ if (audio) {
   audio.addEventListener('play', updateReanalyzeButtonState);
   audio.addEventListener('pause', updateReanalyzeButtonState);
   audio.addEventListener('ended', updateReanalyzeButtonState);
+
+  audio.addEventListener('play', () => {
+    updatePlayerNowPlaying();
+    updatePlayerTransportUi();
+    renderPlaylist();
+  });
+  audio.addEventListener('pause', () => {
+    updatePlayerTransportUi();
+    renderPlaylist();
+  });
+  audio.addEventListener('ended', () => {
+    updatePlayerTransportUi();
+    renderPlaylist();
+  });
+  audio.addEventListener('timeupdate', updatePlayerTransportUi);
+  audio.addEventListener('loadedmetadata', updatePlayerTransportUi);
+}
+
+if (playerPlayBtn) {
+  playerPlayBtn.addEventListener('click', () => {
+    if (currentIndex < 0 && tracks.length) {
+      window.playTrack(0);
+      return;
+    }
+    if (currentIndex >= 0) {
+      window.toggleTrackPlayback(currentIndex);
+    }
+  });
+}
+
+if (playerPrevBtn) {
+  playerPrevBtn.addEventListener('click', () => {
+    if (!tracks.length) return;
+    const next = currentIndex > 0 ? currentIndex - 1 : 0;
+    window.playTrack(next);
+  });
+}
+
+if (playerNextBtn) {
+  playerNextBtn.addEventListener('click', () => {
+    if (!tracks.length) return;
+    const next = currentIndex >= 0 ? Math.min(tracks.length - 1, currentIndex + 1) : 0;
+    window.playTrack(next);
+  });
+}
+
+if (playerSeek) {
+  playerSeek.addEventListener('input', (e) => {
+    seekToSliderValue(e.target.value);
+  });
+}
+
+if (playerVolume && audio) {
+  playerVolume.value = String(audio.volume ?? 1);
+  playerVolume.addEventListener('input', (e) => {
+    audio.volume = clamp(Number(e.target.value), 0, 1);
+  });
 }
 
 const formatLoudness = (value) => {
@@ -2065,6 +2184,10 @@ window.playTrack = function(index) {
 
   renderPlaylist();
   updateReanalyzeButtonState();
+  updatePlayerNowPlaying();
+  updatePlayerTransportUi();
+  updatePlayerNowPlaying();
+  updatePlayerTransportUi();
 
   applyLoudnessMatchGain();
   updateDeltas();
@@ -2131,6 +2254,8 @@ window.removeTrack = function(index) {
       status.className = 'status ready';
     }
     resetAnalysis();
+    updatePlayerNowPlaying();
+    updatePlayerTransportUi();
   }
 
   // If we removed the reference track, cancel any in-flight background analysis.
@@ -2949,6 +3074,45 @@ function draw() {
 
   analyser.getByteFrequencyData(freqBuffer);
 
+  // Player bar mini waveform (realtime from analyser)
+  if (playerWaveCanvas) {
+    const ctx = playerWaveCanvas.getContext('2d');
+    if (ctx) {
+      const w = Math.max(1, playerWaveCanvas.clientWidth || playerWaveCanvas.width || 1);
+      const h = Math.max(1, playerWaveCanvas.clientHeight || playerWaveCanvas.height || 1);
+      if (playerWaveCanvas.width !== w) playerWaveCanvas.width = w;
+      if (playerWaveCanvas.height !== h) playerWaveCanvas.height = h;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(255,255,255,0.02)';
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(74,158,255,0.95)';
+      ctx.beginPath();
+      const sliceWidth = w / bufferLength;
+      let x = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        const v = timeDomainBytes[i] / 128.0;
+        const y = (v * h) / 2;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      ctx.stroke();
+
+      const dur = Number.isFinite(audio?.duration) ? audio.duration : 0;
+      const cur = Number.isFinite(audio?.currentTime) ? audio.currentTime : 0;
+      if (dur > 0 && cur >= 0) {
+        const p = clamp01(cur / dur);
+        ctx.fillStyle = 'rgba(74,158,255,0.10)';
+        ctx.fillRect(0, 0, w * p, h);
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.fillRect(w * p, 0, 1, h);
+      }
+    }
+  }
+
 
   let dominantHue = 150;
   let spectralEnergy = 0;
@@ -3140,16 +3304,6 @@ audio.addEventListener('play', () => {
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(err => console.warn('AudioContext resume failed:', err));
   }
-
-  renderPlaylist();
-});
-
-audio.addEventListener('pause', () => {
-  renderPlaylist();
-});
-
-audio.addEventListener('ended', () => {
-  renderPlaylist();
 });
 
 // Wait for Meyda to load
