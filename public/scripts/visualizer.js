@@ -17,8 +17,9 @@ let loudnessMatchDeltaDb = null;
 // localStorage/sessionStorage can't reliably store large audio files.
 // IndexedDB supports Blob storage and survives refresh.
 const TRACK_DB_NAME = 'meterlab';
-const TRACK_DB_VERSION = 1;
+const TRACK_DB_VERSION = 2;
 const TRACK_STORE = 'tracks';
+const SCORE_STORE = 'scores';
 let trackDbPromise = null;
 
 function openTrackDb() {
@@ -34,6 +35,13 @@ function openTrackDb() {
       if (!db.objectStoreNames.contains(TRACK_STORE)) {
         const store = db.createObjectStore(TRACK_STORE, { keyPath: 'id' });
         store.createIndex('fingerprint', 'fingerprint', { unique: true });
+      }
+
+      if (!db.objectStoreNames.contains(SCORE_STORE)) {
+        const store = db.createObjectStore(SCORE_STORE, { keyPath: 'id' });
+        store.createIndex('savedAt', 'savedAt', { unique: false });
+        store.createIndex('trackId', 'trackId', { unique: false });
+        store.createIndex('comboKey', 'comboKey', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -104,6 +112,46 @@ async function dbGetTrackRecordByFingerprint(fingerprint) {
     const req = index.get(fingerprint);
     req.onsuccess = () => resolve(req.result || null);
     req.onerror = () => reject(req.error || new Error('Failed to read track by fingerprint'));
+  });
+}
+
+async function dbPutScoreRecord(record) {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SCORE_STORE, 'readwrite');
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+    tx.objectStore(SCORE_STORE).put(record);
+  });
+}
+
+async function dbDeleteScoreRecord(id) {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SCORE_STORE, 'readwrite');
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+    tx.objectStore(SCORE_STORE).delete(id);
+  });
+}
+
+async function dbGetAllScoreRecords() {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SCORE_STORE, 'readonly');
+    const req = tx.objectStore(SCORE_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error || new Error('Failed to read scores from IndexedDB'));
+  });
+}
+
+async function dbClearScoreRecords() {
+  const db = await openTrackDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SCORE_STORE, 'readwrite');
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+    tx.objectStore(SCORE_STORE).clear();
   });
 }
 
@@ -242,6 +290,7 @@ const songScoreLabelEl = document.getElementById('songScoreLabel');
 const songScoreBreakdownEl = document.getElementById('songScoreBreakdown');
 const songScoreDetailsEl = document.getElementById('songScoreDetails');
 const refreshScoreBtn = document.getElementById('refreshScoreBtn');
+const saveScoreBtn = document.getElementById('saveScoreBtn');
 
 // Capture default tooltip text so we can append dynamic hints safely.
 const keyMetricTileEl = keyEl?.closest?.('.metric') || null;
@@ -965,6 +1014,88 @@ function updateSongScoreUi() {
   }
 }
 
+function buildScoreSnapshot() {
+  const track = (currentIndex >= 0 && tracks[currentIndex]) ? tracks[currentIndex] : null;
+  const refTrack = (referenceIndex >= 0 && tracks[referenceIndex]) ? tracks[referenceIndex] : null;
+  const current = track?.analysis || null;
+  const reference = refTrack?.analysis || null;
+  const genreKey = genreSelect ? genreSelect.value : 'pop';
+  const result = computeSongScore(current, reference, genreKey);
+
+  if (!track || !current || !Number.isFinite(result?.score)) return null;
+
+  const genreProfile = (genreKey && genreKey !== 'none') ? GENRE_PROFILES[genreKey] : null;
+  const comboKey = `${track.id || track.fingerprint || track.name}|${refTrack?.id || 'no_ref'}|${genreKey || 'none'}`;
+
+  return {
+    id: createId(),
+    savedAt: Date.now(),
+    comboKey,
+    trackId: track.id || null,
+    trackFingerprint: track.fingerprint || null,
+    trackName: track.name || track.file?.name || 'Unknown',
+    trackKey: current.key || null,
+    trackScale: current.scale || null,
+    trackCertainty: Number.isFinite(current.confidence) ? current.confidence : null,
+
+    referenceId: refTrack?.id || null,
+    referenceFingerprint: refTrack?.fingerprint || null,
+    referenceName: refTrack?.name || refTrack?.file?.name || null,
+
+    genreKey: genreKey || 'none',
+    genreName: genreProfile?.name || (genreKey === 'none' ? null : null),
+
+    score: result.score,
+    label: result.label,
+    breakdown: result.breakdown,
+    details: result.details || null
+  };
+}
+
+async function saveCurrentScoreSnapshot() {
+  const snapshot = buildScoreSnapshot();
+  if (!snapshot) {
+    try {
+      if (saveScoreBtn) {
+        const prev = saveScoreBtn.textContent;
+        saveScoreBtn.textContent = 'Nothing to save';
+        saveScoreBtn.disabled = true;
+        setTimeout(() => {
+          saveScoreBtn.textContent = prev;
+          saveScoreBtn.disabled = false;
+        }, 900);
+      }
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  try {
+    if (saveScoreBtn) {
+      saveScoreBtn.disabled = true;
+      saveScoreBtn.textContent = 'Saving…';
+    }
+    await dbPutScoreRecord(snapshot);
+    if (saveScoreBtn) {
+      saveScoreBtn.textContent = 'Saved';
+      setTimeout(() => {
+        saveScoreBtn.textContent = 'Save snapshot';
+        saveScoreBtn.disabled = false;
+      }, 900);
+    }
+  } catch (err) {
+    console.warn('Failed to save score snapshot:', err);
+    if (saveScoreBtn) {
+      saveScoreBtn.textContent = 'Save failed';
+      setTimeout(() => {
+        saveScoreBtn.textContent = 'Save snapshot';
+        saveScoreBtn.disabled = false;
+      }, 1200);
+    }
+  }
+}
+
 function resetSongScoreUi() {
   if (!songScoreValueEl || !songScoreLabelEl || !songScoreBreakdownEl) return;
   songScoreValueEl.textContent = '--';
@@ -1562,6 +1693,12 @@ if (genreSelect) {
 if (refreshScoreBtn) {
   refreshScoreBtn.addEventListener('click', () => {
     updateSongScoreUi();
+  });
+}
+
+if (saveScoreBtn) {
+  saveScoreBtn.addEventListener('click', () => {
+    saveCurrentScoreSnapshot();
   });
 }
 
