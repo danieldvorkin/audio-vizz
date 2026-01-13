@@ -233,6 +233,37 @@ h1 { margin-top: 0; }
   font-size: 0.9rem;
   color: rgba(255,255,255,0.78);
 }
+
+.score-callout {
+  padding: 12px 12px;
+  border-radius: 10px;
+  background: rgba(255, 193, 7, 0.08);
+  border: 1px solid rgba(255, 193, 7, 0.22);
+  color: rgba(255,255,255,0.82);
+}
+.score-callout-title {
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: rgba(255,255,255,0.92);
+}
+.score-callout-sub {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.72);
+}
+.score-callout-issues {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  color: rgba(255,255,255,0.85);
+}
+.score-callout-list {
+  margin: 10px 0 0 0;
+  padding-left: 18px;
+}
+.score-callout-list li {
+  margin: 4px 0;
+  color: rgba(255,255,255,0.78);
+}
 .score-kpi-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

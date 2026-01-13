@@ -243,6 +243,21 @@ const songScoreBreakdownEl = document.getElementById('songScoreBreakdown');
 const songScoreDetailsEl = document.getElementById('songScoreDetails');
 const refreshScoreBtn = document.getElementById('refreshScoreBtn');
 
+// Capture default tooltip text so we can append dynamic hints safely.
+const keyMetricTileEl = keyEl?.closest?.('.metric') || null;
+const scaleMetricTileEl = scaleEl?.closest?.('.metric') || null;
+const confidenceMetricTileEl = confidenceEl?.closest?.('.metric') || null;
+const KEY_TOOLTIP_DEFAULT = keyMetricTileEl?.getAttribute?.('data-tooltip') || '';
+const SCALE_TOOLTIP_DEFAULT = scaleMetricTileEl?.getAttribute?.('data-tooltip') || '';
+const CONFIDENCE_TOOLTIP_DEFAULT = confidenceMetricTileEl?.getAttribute?.('data-tooltip') || '';
+
+function confidenceLabel(confidence01) {
+  if (!Number.isFinite(confidence01)) return { label: '--', bucket: 'unknown' };
+  if (confidence01 >= 0.72) return { label: 'High', bucket: 'high' };
+  if (confidence01 >= 0.45) return { label: 'Medium', bucket: 'medium' };
+  return { label: 'Low', bucket: 'low' };
+}
+
 // Constants
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
@@ -251,6 +266,117 @@ const SAMPLE_YIELD_INTERVAL = 131072;
 const FRAME_YIELD_INTERVAL = 32;
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const clamp01 = (value) => clamp(value, 0, 1);
+
+let CHROMA_CALIBRATION_SHIFT = 0;
+
+function rotateLeft12(arr, n) {
+  if (!Array.isArray(arr) || arr.length !== 12) return arr;
+  const offset = ((n % 12) + 12) % 12;
+  return arr.slice(offset).concat(arr.slice(0, offset));
+}
+
+function hpcpFromAmplitudeSpectrum(amplitudeSpectrum, sampleRate, bufferSize, minHz, maxHz) {
+  const chroma = new Array(12).fill(0);
+  if (!Array.isArray(amplitudeSpectrum) || amplitudeSpectrum.length === 0) return chroma;
+  if (!Number.isFinite(sampleRate) || !Number.isFinite(bufferSize) || bufferSize <= 0) return chroma;
+
+  const freqPerBin = sampleRate / bufferSize;
+  const lo = Number.isFinite(minHz) ? Math.max(0, minHz) : 0;
+  const hi = Number.isFinite(maxHz) ? Math.max(lo, maxHz) : sampleRate / 2;
+
+  for (let i = 1; i < amplitudeSpectrum.length; i++) {
+    const f = i * freqPerBin;
+    if (f < lo || f > hi) continue;
+    const mag = amplitudeSpectrum[i];
+    if (!Number.isFinite(mag) || mag <= 0) continue;
+
+    // Map frequency to pitch class. Weighted to emphasize lower partials.
+    const midi = 69 + 12 * Math.log2(f / 440);
+    if (!Number.isFinite(midi)) continue;
+    // Soft assignment to adjacent pitch classes (reduces detune/rounding artifacts).
+    const pcFloat = ((midi % 12) + 12) % 12;
+    const pc0 = Math.floor(pcFloat) % 12;
+    const frac = pcFloat - Math.floor(pcFloat);
+    const pc1 = (pc0 + 1) % 12;
+    const weight = mag / Math.sqrt(Math.max(40, f));
+    chroma[pc0] += weight * (1 - frac);
+    chroma[pc1] += weight * frac;
+  }
+
+  return chroma;
+}
+
+function normalizeChromaSum(arr) {
+  if (!Array.isArray(arr) || arr.length !== 12) return new Array(12).fill(0);
+  const safe = arr.map(v => (Number.isFinite(v) && v > 0 ? v : 0));
+  const sum = safe.reduce((s, v) => s + v, 0);
+  return sum > 0 ? safe.map(v => v / sum) : safe;
+}
+
+function blendChroma(a, b, t) {
+  if (!Array.isArray(a) || a.length !== 12) return b;
+  if (!Array.isArray(b) || b.length !== 12) return a;
+  const mix = clamp01(t);
+  const out = new Array(12);
+  for (let i = 0; i < 12; i++) {
+    const av = Number.isFinite(a[i]) ? a[i] : 0;
+    const bv = Number.isFinite(b[i]) ? b[i] : 0;
+    out[i] = (1 - mix) * av + mix * bv;
+  }
+  return out;
+}
+
+function calibrateChromaShift() {
+  try {
+    if (typeof Meyda === 'undefined') return 0;
+    if (typeof Meyda.extract !== 'function') return 0;
+    if (typeof Meyda.featureExtractors !== 'object' || !Meyda.featureExtractors?.chroma) return 0;
+
+    const sampleRate = 44100;
+    const bufferSize = 4096;
+    const frame = new Float32Array(bufferSize);
+
+    // A clean synthetic tone helps verify chroma bin ordering.
+    // We use C4 + C5 to strengthen the pitch class without adding non-harmonic energy.
+    const f1 = 261.625565; // C4
+    const f2 = 523.25113;  // C5
+    for (let i = 0; i < bufferSize; i++) {
+      const t = i / sampleRate;
+      // Hann-ish envelope to reduce spectral leakage.
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (bufferSize - 1));
+      frame[i] = w * (0.6 * Math.sin(2 * Math.PI * f1 * t) + 0.4 * Math.sin(2 * Math.PI * f2 * t));
+    }
+
+    const chroma = Meyda.extract('chroma', frame, { bufferSize, sampleRate, windowingFunction: 'hann' });
+    if (!Array.isArray(chroma) || chroma.length !== 12) return 0;
+
+    let maxIdx = 0;
+    let maxVal = -Infinity;
+    for (let i = 0; i < 12; i++) {
+      const v = Number.isFinite(chroma[i]) ? chroma[i] : -Infinity;
+      if (v > maxVal) {
+        maxVal = v;
+        maxIdx = i;
+      }
+    }
+
+    // Expected pitch class index for C is 0 (KEY_NAMES[0] = C).
+    const shift = ((0 - maxIdx) % 12 + 12) % 12;
+    return shift;
+  } catch (err) {
+    console.debug('Chroma calibration failed:', err);
+    return 0;
+  }
+}
+
+const REFERENCE_TOLERANCES = {
+  loudness: 1.6,
+  crestDb: 1.8,
+  brightness: 550,
+  rolloff: 1100,
+  flatness: 0.10,
+  bpm: 4.0
+};
 
 // Song score (genre targets + optional reference match)
 const GENRE_PROFILES = {
@@ -440,15 +566,7 @@ function computeSongScore(current, reference, genreKey) {
       flatness: reference.flatness,
       bpm: reference.bpm
     };
-    const refTolerances = {
-      loudness: 1.6,
-      crestDb: 1.8,
-      brightness: 550,
-      rolloff: 1100,
-      flatness: 0.10,
-      bpm: 4.0
-    };
-    referenceScore = computeScoreAgainstTargets(current, refTargets, refTolerances, true);
+    referenceScore = computeScoreAgainstTargets(current, refTargets, REFERENCE_TOLERANCES, true);
   }
 
   if (genreProfile) {
@@ -541,6 +659,115 @@ function computeSongScore(current, reference, genreKey) {
   };
 }
 
+function weightedAverageFromKeys(perMetric, keys, weightMap) {
+  if (!perMetric || !Array.isArray(keys) || keys.length === 0) return null;
+  const parts = keys.map(k => ({ metric: k, score: perMetric[k], weight: weightMap?.[k] ?? 0 }));
+  const score = weightedAverageScore(parts);
+  return Number.isFinite(score) ? score : null;
+}
+
+function computeScoreSummary(details) {
+  if (!details?.current) return null;
+
+  const wantsGenre = !!details.genreProfile && !!details.currentGenreScore?.score;
+  const wantsReference = !!details.reference && !!details.referenceScore?.score;
+
+  const basis = wantsGenre
+    ? {
+        name: `${details.genreProfile?.name || 'Genre'} target`,
+        targets: details.genreProfile.targets,
+        tolerances: details.genreProfile.tolerances
+      }
+    : (wantsReference
+        ? {
+            name: 'Reference',
+            targets: {
+              loudness: details.reference.loudness,
+              crestDb: details.reference.crestDb,
+              brightness: details.reference.brightness,
+              rolloff: details.reference.rolloff,
+              flatness: details.reference.flatness
+            },
+            tolerances: REFERENCE_TOLERANCES
+          }
+        : null);
+
+  if (!basis?.targets || !basis?.tolerances) return null;
+
+  const a = details.current;
+  const t = basis.targets;
+  const tol = basis.tolerances;
+
+  const deltas = {
+    loudness: (Number.isFinite(a.loudness) && Number.isFinite(t.loudness)) ? (a.loudness - t.loudness) : null,
+    crestDb: (Number.isFinite(a.crestDb) && Number.isFinite(t.crestDb)) ? (a.crestDb - t.crestDb) : null
+  };
+
+  const perMetric = {
+    loudness: metricScore(a.loudness, t.loudness, tol.loudness),
+    crestDb: metricScore(a.crestDb, t.crestDb, tol.crestDb),
+    brightness: metricScore(a.brightness, t.brightness, tol.brightness),
+    rolloff: metricScore(a.rolloff, t.rolloff, tol.rolloff),
+    flatness: metricScore(a.flatness, t.flatness, tol.flatness)
+  };
+
+  const levelScore = perMetric.loudness;
+  const dynamicsScore = perMetric.crestDb;
+  const toneScore = weightedAverageFromKeys(perMetric, ['brightness', 'rolloff', 'flatness'], SCORE_WEIGHTS);
+
+  const issues = [];
+  const loudnessDelta = deltas.loudness;
+  const crestDelta = deltas.crestDb;
+
+  const loudTooHot = Number.isFinite(loudnessDelta) && loudnessDelta > 1.2;
+  const loudTooQuiet = Number.isFinite(loudnessDelta) && loudnessDelta < -1.2;
+  const crestTooTight = Number.isFinite(crestDelta) && crestDelta < -1.2;
+  const crestTooOpen = Number.isFinite(crestDelta) && crestDelta > 1.2;
+
+  if (loudTooHot) issues.push('Loudness is hot');
+  if (loudTooQuiet) issues.push('Loudness is low');
+  if (crestTooTight) issues.push('Dynamics are tight');
+  if (crestTooOpen) issues.push('Dynamics are open');
+
+  let primary = null;
+  if (loudTooHot || loudTooQuiet) primary = 'loudness';
+  else if (crestTooTight || crestTooOpen) primary = 'dynamics';
+
+  const steps = [];
+  if (loudTooHot && crestTooOpen) {
+    steps.push('Fix loudness first: reduce limiter/clipper drive and/or trim master gain.');
+    steps.push('If you still want “glue”, you can add gentle bus compression, but lower makeup/output so integrated loudness still comes down.');
+  } else if (loudTooHot && crestTooTight) {
+    steps.push('You’re loud and compressed: back off limiting/compression to recover crest, then re-hit loudness with level balance (not more compression).');
+  } else if (loudTooQuiet && crestTooOpen) {
+    steps.push('You’re quiet and open: gentle bus compression + limiting can raise density; keep transients alive with slow attack / modest ratio.');
+  } else if (loudTooQuiet && crestTooTight) {
+    steps.push('You’re quiet but already tight: avoid more compression; rebalance levels/EQ first, then add only minimal limiting at the end.');
+  } else if (loudTooHot) {
+    steps.push('Bring loudness down: reduce limiter/clipper drive or master gain; avoid chasing volume with more compression.');
+  } else if (loudTooQuiet) {
+    steps.push('Bring loudness up: increase master gain/limiting carefully, or rebalance mix levels into the limiter.');
+  } else if (crestTooTight) {
+    steps.push('Open dynamics: ease bus compression/limiting, or use parallel compression instead of more gain reduction.');
+  } else if (crestTooOpen) {
+    steps.push('Add control: if it feels weak, try gentle bus compression (1–2 dB GR) or transient shaping.');
+  } else {
+    steps.push('No major loudness/dynamics red flags; use the metric rows for fine-tuning.');
+  }
+
+  return {
+    basisName: basis.name,
+    deltas,
+    perMetric,
+    levelScore,
+    dynamicsScore,
+    toneScore,
+    issues,
+    primary,
+    steps
+  };
+}
+
 function updateSongScoreUi() {
   if (!songScoreValueEl || !songScoreLabelEl || !songScoreBreakdownEl) return;
 
@@ -613,6 +840,17 @@ function updateSongScoreUi() {
 
       const summaryBits = [];
       summaryBits.push(`<div class="score-kpi"><strong>Overall</strong>: ${Math.round(rounded)} (${result.label})</div>`);
+
+      const scoreSummary = computeScoreSummary(details);
+      if (scoreSummary) {
+        const level = Number.isFinite(scoreSummary.levelScore) ? Math.round(scoreSummary.levelScore) : '--';
+        const dyn = Number.isFinite(scoreSummary.dynamicsScore) ? Math.round(scoreSummary.dynamicsScore) : '--';
+        const tone = Number.isFinite(scoreSummary.toneScore) ? Math.round(scoreSummary.toneScore) : '--';
+        summaryBits.push(`<div class="score-kpi"><strong>Level</strong>: ${level}</div>`);
+        summaryBits.push(`<div class="score-kpi"><strong>Dynamics</strong>: ${dyn}</div>`);
+        summaryBits.push(`<div class="score-kpi"><strong>Tone</strong>: ${tone}</div>`);
+      }
+
       if (wantsReferenceMatch) {
         summaryBits.push(`<div class="score-kpi"><strong>Ref match</strong>: ${Math.round(details.referenceScore.score)} (how close you are to the reference)</div>`);
       }
@@ -694,7 +932,34 @@ function updateSongScoreUi() {
         const summaryHtml = summaryBits.length
           ? `<div class="score-kpi-row">${summaryBits.join('')}</div>`
           : '';
+
+        const summaryCallout = scoreSummary
+          ? (() => {
+              const deltaL = scoreSummary.deltas?.loudness;
+              const deltaC = scoreSummary.deltas?.crestDb;
+              const loudnessDeltaText = Number.isFinite(deltaL) ? formatMaybeSignedDelta(deltaL, ' LUFS') : '--';
+              const crestDeltaText = Number.isFinite(deltaC)
+                ? `${deltaC > 0 ? '+' : (deltaC < 0 ? '−' : '±')}${Math.abs(deltaC).toFixed(1)} dB`
+                : '--';
+              const issuesText = Array.isArray(scoreSummary.issues) && scoreSummary.issues.length
+                ? scoreSummary.issues.join(' · ')
+                : 'No major issues detected';
+              const stepHtml = (Array.isArray(scoreSummary.steps) ? scoreSummary.steps : []).map(s => `<li>${s}</li>`).join('');
+              return `
+                <div class="score-callout" role="note" aria-label="Score summary">
+                  <div class="score-callout-title">Score summary (why rows can disagree)</div>
+                  <div class="score-callout-sub">Basis: ${scoreSummary.basisName} · Loudness Δ ${loudnessDeltaText} · Dynamics Δ ${crestDeltaText}</div>
+                  <div class="score-callout-issues">${issuesText}</div>
+                  <ul class="score-callout-list">${stepHtml}</ul>
+                </div>
+              `;
+            })()
+          : '';
+
         songScoreDetailsEl.innerHTML = `${summaryHtml}${rows.join('')}`;
+        if (summaryCallout) {
+          songScoreDetailsEl.innerHTML = `${summaryHtml}${summaryCallout}${rows.join('')}`;
+        }
       }
     }
   }
@@ -1635,7 +1900,12 @@ async function computeTrackAnalysis(track, runId, shouldAbort) {
   const frameSize = 4096;
   const hopSize = 2048;
   const chromaSum = new Array(12).fill(0);
-  let chromaCount = 0;
+  let chromaWeightSum = 0;
+
+  const hpcpSum = new Array(12).fill(0);
+  let hpcpWeightSum = 0;
+  const bassChromaSum = new Array(12).fill(0);
+  let bassWeightSum = 0;
   const centroids = [];
   const rolloffValues = [];
   const flatnessValues = [];
@@ -1666,7 +1936,10 @@ async function computeTrackAnalysis(track, runId, shouldAbort) {
   let frameCount = 0;
   for (let i = 0; i + frameSize <= mono.length; i += hopSize) {
     const frame = mono.subarray(i, i + frameSize);
-    const chroma = extractFeature('chroma', frame);
+    const chromaRaw = extractFeature('chroma', frame);
+    const chroma = Array.isArray(chromaRaw) && chromaRaw.length === 12
+      ? rotateLeft12(chromaRaw, CHROMA_CALIBRATION_SHIFT)
+      : chromaRaw;
     const rms = extractFeature('rms', frame);
     const centroid = extractFeature('spectralCentroid', frame);
     const rolloff = extractFeature('spectralRolloff', frame);
@@ -1674,9 +1947,40 @@ async function computeTrackAnalysis(track, runId, shouldAbort) {
     const zcr = extractFeature('zeroCrossingRate', frame);
     const loudness = extractFeature('loudness', frame);
 
+    // Spectrum-based chroma (HPCP-ish). We compute this less frequently to reduce cost.
+    let amplitudeSpectrum = null;
+    if (frameCount % 4 === 0) {
+      amplitudeSpectrum = extractFeature('amplitudeSpectrum', frame);
+    }
+
     if (chroma && rms && rms > 0.003) {
-      for (let c = 0; c < 12; c++) chromaSum[c] += chroma[c];
-      chromaCount++;
+      // Chroma from noisy / percussive frames can confuse tonic & mode.
+      // Downweight frames with high spectral flatness (noise-like).
+      const flat = (typeof flatness === 'number' && Number.isFinite(flatness)) ? clamp01(flatness) : 0.18;
+      const harmonicWeight = 1 - flat;
+      const weight = Math.max(0, rms) * Math.max(0, harmonicWeight);
+      if (weight > 0.00005) {
+        for (let c = 0; c < 12; c++) chromaSum[c] += chroma[c] * weight;
+        chromaWeightSum += weight;
+      }
+    }
+
+    if (amplitudeSpectrum && rms && rms > 0.003) {
+      const flat = (typeof flatness === 'number' && Number.isFinite(flatness)) ? clamp01(flatness) : 0.18;
+      const harmonicWeight = 1 - flat;
+      const weight = Math.max(0, rms) * Math.max(0, harmonicWeight);
+
+      if (weight > 0.00005) {
+        const broad = hpcpFromAmplitudeSpectrum(amplitudeSpectrum, sampleRate, frameSize, 55, 5000);
+        const bass = hpcpFromAmplitudeSpectrum(amplitudeSpectrum, sampleRate, frameSize, 40, 260);
+
+        for (let c = 0; c < 12; c++) {
+          hpcpSum[c] += broad[c] * weight;
+          bassChromaSum[c] += bass[c] * weight;
+        }
+        hpcpWeightSum += weight;
+        bassWeightSum += weight;
+      }
     }
 
     if (typeof centroid === 'number') centroids.push(centroid);
@@ -1696,9 +2000,20 @@ async function computeTrackAnalysis(track, runId, shouldAbort) {
   }
 
   let key = null;
-  if (chromaCount > 0) {
-    const avgChroma = chromaSum.map(v => v / chromaCount);
-    key = detectKey(avgChroma);
+  if (chromaWeightSum > 0 || hpcpWeightSum > 0) {
+    const avgMeyda = chromaWeightSum > 0 ? chromaSum.map(v => v / chromaWeightSum) : new Array(12).fill(0);
+    const avgHpcp = hpcpWeightSum > 0 ? hpcpSum.map(v => v / hpcpWeightSum) : new Array(12).fill(0);
+    const avgBass = bassWeightSum > 0 ? bassChromaSum.map(v => v / bassWeightSum) : null;
+
+    const meydaN = normalizeChromaSum(avgMeyda);
+    const hpcpN = normalizeChromaSum(avgHpcp);
+
+    // Only blend in HPCP if we actually computed it for enough frames.
+    // Otherwise it can add noise and degrade results.
+    const hasStrongHpcp = hpcpWeightSum > 0.15 * (chromaWeightSum || hpcpWeightSum);
+    const blended = hasStrongHpcp ? blendChroma(meydaN, hpcpN, 0.25) : meydaN;
+
+    key = detectKey(blended, avgBass ? normalizeChromaSum(avgBass) : null);
   }
 
   const avgCentroid = average(centroids);
@@ -1721,6 +2036,7 @@ async function computeTrackAnalysis(track, runId, shouldAbort) {
     key: key?.name || '--',
     scale: key?.scale || '--',
     confidence: key?.confidence || 0,
+    keyCandidates: Array.isArray(key?.candidates) ? key.candidates : null,
     brightness: avgCentroid,
     duration: mono.length / sampleRate,
     partial: decoded.length > maxSamples,
@@ -1777,7 +2093,7 @@ async function analyzeTrack(track, runId) {
 }
 
 // Detect key
-function detectKey(chroma) {
+function detectKey(chroma, bassChroma) {
   const standardize = (arr) => {
     const mean = arr.reduce((s, v) => s + v, 0) / Math.max(1, arr.length);
     const centered = arr.map(v => v - mean);
@@ -1839,70 +2155,121 @@ function detectKey(chroma) {
     { name: 'locrian', intervals: [0, 1, 3, 5, 6, 8, 10], profile: buildModeProfile([0, 1, 3, 5, 6, 8, 10], MINOR_DEGREE_WEIGHTS) }
   ];
 
-  const evaluate = (inputChroma) => {
+  const evaluate = (inputChroma, inputBassChroma) => {
     const normChroma = standardize(inputChroma);
     const sumChroma = normalizeSum(inputChroma);
-    let best = { score: -Infinity, name: null, scale: null };
-    let secondBest = { score: -Infinity };
+    const sumBass = Array.isArray(inputBassChroma) && inputBassChroma.length === 12
+      ? normalizeSum(inputBassChroma)
+      : null;
+    const candidates = [];
 
     const membershipScoreFor = (tonicIndex, intervals) => {
-    if (!Array.isArray(intervals) || intervals.length === 0) return 0;
-    const tonicEnergy = sumChroma[tonicIndex] || 0;
-    let inEnergy = 0;
-    for (const step of intervals) {
-      const idx = (tonicIndex + step + 1200) % 12;
-      inEnergy += sumChroma[idx] || 0;
-    }
-    const outEnergy = 1 - inEnergy;
-    // Bias toward a strong tonic to distinguish modes that share pitch sets
-    // (e.g., E Phrygian vs C Major).
-    const tonicBoost = 0.35;
-    const outPenalty = 0.55;
-    return inEnergy - outPenalty * outEnergy + tonicBoost * tonicEnergy;
+      if (!Array.isArray(intervals) || intervals.length === 0) return { membership: 0, inEnergy: 0, tonicEnergy: 0 };
+      const tonicEnergy = sumChroma[tonicIndex] || 0;
+      let inEnergy = 0;
+      for (const step of intervals) {
+        const idx = (tonicIndex + step + 1200) % 12;
+        inEnergy += sumChroma[idx] || 0;
+      }
+      const outEnergy = 1 - inEnergy;
+      // Bias toward a strong tonic to distinguish modes that share pitch sets
+      // (e.g., E Phrygian vs C Major).
+      const tonicBoost = 0.35;
+      const outPenalty = 0.55;
+      const membership = inEnergy - outPenalty * outEnergy + tonicBoost * tonicEnergy;
+      return { membership, inEnergy, tonicEnergy };
     };
 
     for (let i = 0; i < 12; i++) {
       for (const template of SCALE_TEMPLATES) {
         const normTemplate = standardize(template.profile);
         const corrScore = dot(normChroma, rotate(normTemplate, i));
-        const membership = membershipScoreFor(i, template.intervals);
-        const score = corrScore + 0.75 * membership;
-        if (score > best.score) {
-          secondBest = best;
-          best = { score, name: KEY_NAMES[i], scale: template.name };
-        } else if (score > secondBest.score) {
-          secondBest = { score };
+        const ms = membershipScoreFor(i, template.intervals);
+        // Small tonic emphasis helps separate relative-mode ambiguities.
+        const bassTonic = sumBass ? (sumBass[i] || 0) : 0;
+        const tonicNudge = 0.10 * (ms.tonicEnergy || 0) + 0.18 * bassTonic;
+        const score = corrScore + 0.75 * (ms.membership || 0) + tonicNudge;
+        candidates.push({
+          score,
+          corrScore,
+          membership: ms.membership,
+          inEnergy: ms.inEnergy,
+          tonicEnergy: ms.tonicEnergy,
+          bassTonic,
+          name: KEY_NAMES[i],
+          scale: template.name,
+          tonicIndex: i
+        });
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const bestByScore = candidates[0] || { score: -Infinity, name: null, scale: null };
+    let best = bestByScore;
+
+    // If ambiguous by score, prefer the candidate with a clearer tonic/bass among near-ties.
+    if (Number.isFinite(bestByScore.score)) {
+      const window = 0.06;
+      const near = candidates.filter(c => Number.isFinite(c.score) && c.score >= bestByScore.score - window);
+      if (near.length > 1) {
+        near.sort((a, b) => ((b.bassTonic || 0) + (b.tonicEnergy || 0)) - ((a.bassTonic || 0) + (a.tonicEnergy || 0)));
+        const tonicWinner = near[0];
+        const tonicWinnerStrength = (tonicWinner?.bassTonic || 0) + (tonicWinner?.tonicEnergy || 0);
+        const bestStrength = (bestByScore?.bassTonic || 0) + (bestByScore?.tonicEnergy || 0);
+        if (tonicWinner && tonicWinnerStrength > bestStrength + 0.04) {
+          best = tonicWinner;
         }
       }
     }
 
-    const separation = best.score - secondBest.score;
-    const confidence = clamp(separation / 0.25, 0, 1);
-    return { best, confidence };
+    // Ensure the returned candidates include the chosen best first.
+    if (best && candidates.length) {
+      const idx = candidates.findIndex(c => c === best || (c.name === best.name && c.scale === best.scale && c.tonicIndex === best.tonicIndex));
+      if (idx > 0) {
+        const picked = candidates.splice(idx, 1)[0];
+        candidates.unshift(picked);
+      }
+    }
+
+    // Confidence: compute probability of chosen best vs strongest alternative.
+    const temp = 0.18;
+    const maxScore = Number.isFinite(candidates[0]?.score) ? candidates[0].score : (Number.isFinite(best?.score) ? best.score : 0);
+    const exps = candidates.slice(0, 10).map(c => {
+      const s = Number.isFinite(c.score) ? c.score : -Infinity;
+      const x = (s - maxScore) / temp;
+      return Number.isFinite(x) ? Math.exp(Math.max(-60, x)) : 0;
+    });
+    const expSum = exps.reduce((s, v) => s + v, 0) || 1;
+    const probs = exps.map(v => v / expSum);
+    const pBest = probs[0] || 0;
+    const pSecond = probs.slice(1).reduce((m, v) => Math.max(m, v), 0);
+    const marginConf = clamp((pBest - pSecond) / 0.65, 0, 1);
+
+    let bassConf = 0;
+    if (sumBass) {
+      const sortedBass = sumBass
+        .map((v, idx) => ({ v: Number.isFinite(v) ? v : 0, idx }))
+        .sort((a, b) => b.v - a.v);
+      const b1 = sortedBass[0]?.v ?? 0;
+      const b2 = sortedBass[1]?.v ?? 0;
+      bassConf = clamp((b1 - b2) / 0.18, 0, 1);
+    }
+
+    const confidence = clamp(0.75 * marginConf + 0.25 * bassConf, 0, 1);
+    return {
+      best,
+      confidence,
+      candidates: candidates.slice(0, 5)
+    };
   };
 
-  // Some chroma extractors differ in bin ordering (e.g., starting at A instead of C).
-  // Try all rotations and pick the most confident overall interpretation.
-  let chosen = null;
-  for (let shift = 0; shift < 12; shift++) {
-    const rotated = rotateLeft(chroma, shift);
-    const result = evaluate(rotated);
-    if (!chosen) {
-      chosen = { shift, ...result };
-      continue;
-    }
-    // Prefer higher confidence; break ties on score.
-    const chosenObj = chosen.best.score + chosen.confidence * 0.2;
-    const candidateObj = result.best.score + result.confidence * 0.2;
-    if (candidateObj > chosenObj + (shift === 0 ? 0 : 0.005)) {
-      chosen = { shift, ...result };
-    }
-  }
-
+  const result = evaluate(chroma, bassChroma);
   return {
-    name: chosen?.best?.name || null,
-    scale: chosen?.best?.scale || null,
-    confidence: chosen?.confidence ?? 0
+    name: result?.best?.name || null,
+    scale: result?.best?.scale || null,
+    confidence: result?.confidence ?? 0,
+    candidates: Array.isArray(result?.candidates) ? result.candidates : null,
+    chromaShift: CHROMA_CALIBRATION_SHIFT
   };
 }
 
@@ -1910,7 +2277,48 @@ function detectKey(chroma) {
 function displayAnalysis(analysis) {
   keyEl.textContent = analysis.key;
   scaleEl.textContent = analysis.scale.charAt(0).toUpperCase() + analysis.scale.slice(1);
-  confidenceEl.textContent = Math.round(analysis.confidence * 100) + '%';
+  const conf01 = Number.isFinite(analysis.confidence) ? analysis.confidence : 0;
+  const confPct = Math.round(conf01 * 100);
+  const confMeta = confidenceLabel(conf01);
+  confidenceEl.textContent = confMeta.label;
+
+  try {
+    const certaintyTile = confidenceMetricTileEl || confidenceEl?.closest?.('.metric');
+    if (certaintyTile) {
+      const baseTip = CONFIDENCE_TOOLTIP_DEFAULT
+        || certaintyTile.getAttribute('data-tooltip')
+        || 'Key certainty: how separated the top guess is from the runner-up (low = ambiguous).';
+      const extra = `Current: ${confPct}% (${confMeta.label}). Use this to decide whether to trust the label or check the top guesses.`;
+      certaintyTile.setAttribute('data-tooltip', `${baseTip} ${extra}`);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Add extra context as a tooltip when the key/mode is ambiguous.
+  try {
+    const keyMetricEl = keyMetricTileEl || keyEl?.closest?.('.metric');
+    if (keyMetricEl) {
+      const baseTip = KEY_TOOLTIP_DEFAULT || keyMetricEl.getAttribute('data-tooltip') || 'Key estimate based on chroma correlation.';
+      const shiftText = `chromaShift=${CHROMA_CALIBRATION_SHIFT}`;
+
+      const top = (Array.isArray(analysis.keyCandidates) ? analysis.keyCandidates : [])
+        .slice(0, 3)
+        .map(c => {
+          const scale = String(c.scale || '');
+          const scaleCap = scale ? (scale.charAt(0).toUpperCase() + scale.slice(1)) : '';
+          const scoreText = Number.isFinite(c.score) ? c.score.toFixed(2) : '--';
+          const tonicText = Number.isFinite(c.tonicEnergy) ? c.tonicEnergy.toFixed(2) : '--';
+          return `${c.name} ${scaleCap} (s=${scoreText}, tonic=${tonicText})`;
+        });
+
+      const extra = top.length ? `Top guesses (${shiftText}): ${top.join(' · ')}` : shiftText;
+      if (top.length && confPct < 65) keyMetricEl.setAttribute('data-tooltip', `${baseTip} ${extra}`);
+      else keyMetricEl.setAttribute('data-tooltip', baseTip);
+    }
+  } catch {
+    /* ignore */
+  }
   brightnessEl.textContent = Number.isFinite(analysis.brightness) ? formatHz(analysis.brightness) : '--';
 
   const mins = Math.floor(analysis.duration / 60);
@@ -1953,6 +2361,14 @@ function resetAnalysis() {
   keyEl.textContent = '--';
   scaleEl.textContent = '--';
   confidenceEl.textContent = '--';
+
+  try {
+    if (keyMetricTileEl && KEY_TOOLTIP_DEFAULT) keyMetricTileEl.setAttribute('data-tooltip', KEY_TOOLTIP_DEFAULT);
+    if (scaleMetricTileEl && SCALE_TOOLTIP_DEFAULT) scaleMetricTileEl.setAttribute('data-tooltip', SCALE_TOOLTIP_DEFAULT);
+    if (confidenceMetricTileEl && CONFIDENCE_TOOLTIP_DEFAULT) confidenceMetricTileEl.setAttribute('data-tooltip', CONFIDENCE_TOOLTIP_DEFAULT);
+  } catch {
+    /* ignore */
+  }
   brightnessEl.textContent = '--';
   durationEl.textContent = '--';
   if (bpmEl) bpmEl.textContent = '--';
@@ -2424,6 +2840,10 @@ audio.addEventListener('ended', () => {
 window.addEventListener('load', () => {
   if (typeof Meyda !== 'undefined') {
     console.log('Meyda loaded successfully');
+    CHROMA_CALIBRATION_SHIFT = calibrateChromaShift();
+    if (CHROMA_CALIBRATION_SHIFT) {
+      console.log('[MeterLab] Chroma calibrated shift:', CHROMA_CALIBRATION_SHIFT);
+    }
     return;
   }
 
@@ -2433,6 +2853,10 @@ window.addEventListener('load', () => {
   fallbackScript.onload = () => {
     if (typeof Meyda !== 'undefined') {
       console.log('Meyda loaded via fallback CDN');
+      CHROMA_CALIBRATION_SHIFT = calibrateChromaShift();
+      if (CHROMA_CALIBRATION_SHIFT) {
+        console.log('[MeterLab] Chroma calibrated shift:', CHROMA_CALIBRATION_SHIFT);
+      }
       status.textContent = 'Idle';
       status.className = 'status';
     } else {
