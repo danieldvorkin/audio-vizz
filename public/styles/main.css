@@ -118,6 +118,7 @@ body {
 }
 
 .player-vol {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -125,6 +126,36 @@ body {
   border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.03);
+}
+
+.player-popover {
+  position: absolute;
+  top: -34px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(18,18,18,0.94);
+  color: rgba(255,255,255,0.92);
+  font-size: 0.78rem;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.35);
+}
+
+.player-popover::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid rgba(18,18,18,0.94);
 }
 
 .player-vol-icon {

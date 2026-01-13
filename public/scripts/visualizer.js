@@ -295,6 +295,13 @@ const playerSeek = document.getElementById('playerSeek');
 const playerTimeEl = document.getElementById('playerTime');
 const playerVolume = document.getElementById('playerVolume');
 const playerWaveCanvas = document.getElementById('playerWave');
+const playerVolPopover = document.getElementById('playerVolPopover');
+
+// Player bar waveform cache (static per-track)
+// Must be declared before handleResize() runs.
+let playerWaveBaseCanvas = null;
+let playerWaveBaseCtx = null;
+let waveformComputeRunId = 0;
 
 // Song score elements
 const genreSelect = document.getElementById('genreSelect');
@@ -1317,6 +1324,9 @@ function updatePlayerTransportUi() {
   }
 
   setPlayerPlayIcon(isCurrentlyPlaying());
+
+  // Update playhead/progress without animating the waveform.
+  renderPlayerWaveformOverlay();
 }
 
 function seekToSliderValue(value) {
@@ -1325,6 +1335,198 @@ function seekToSliderValue(value) {
   if (!(dur > 0)) return;
   const t = clamp(Number(value) / 1000, 0, 1) * dur;
   audio.currentTime = t;
+}
+
+async function computeWaveformPeaksForTrack(track, { points = 1600 } = {}) {
+  if (!track?.file) return null;
+  initAudio();
+  if (!audioCtx) return null;
+
+  const runId = ++waveformComputeRunId;
+  const buffer = await track.file.arrayBuffer();
+  if (runId !== waveformComputeRunId) return null;
+
+  const decoded = await audioCtx.decodeAudioData(buffer.slice(0));
+  if (runId !== waveformComputeRunId) return null;
+
+  const length = decoded.length;
+  const channelCount = decoded.numberOfChannels;
+  const safePoints = clamp(Math.floor(points), 300, 4000);
+  const step = Math.max(1, Math.floor(length / safePoints));
+
+  const minPeaks = new Float32Array(safePoints);
+  const maxPeaks = new Float32Array(safePoints);
+  const channels = [];
+  for (let ch = 0; ch < channelCount; ch++) channels.push(decoded.getChannelData(ch));
+
+  for (let i = 0; i < safePoints; i++) {
+    if (runId !== waveformComputeRunId) return null;
+    const start = i * step;
+    const end = Math.min(length, (i + 1) * step);
+    let min = 1;
+    let max = -1;
+
+    for (let ch = 0; ch < channelCount; ch++) {
+      const data = channels[ch];
+      for (let s = start; s < end; s++) {
+        const v = data[s] || 0;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+
+    minPeaks[i] = min;
+    maxPeaks[i] = max;
+
+    if (i > 0 && i % 140 === 0) {
+      await yieldToMain();
+    }
+  }
+
+  return { minPeaks, maxPeaks };
+}
+
+function ensurePlayerWaveCache(w, h) {
+  if (!playerWaveBaseCanvas) {
+    playerWaveBaseCanvas = document.createElement('canvas');
+    playerWaveBaseCtx = playerWaveBaseCanvas.getContext('2d');
+  }
+  if (playerWaveBaseCanvas.width !== w) playerWaveBaseCanvas.width = w;
+  if (playerWaveBaseCanvas.height !== h) playerWaveBaseCanvas.height = h;
+}
+
+function renderPlayerWaveformBase() {
+  if (!playerWaveCanvas) return;
+  const ctx = playerWaveCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const w = Math.max(1, playerWaveCanvas.clientWidth || playerWaveCanvas.width || 1);
+  const h = Math.max(1, playerWaveCanvas.clientHeight || playerWaveCanvas.height || 1);
+  if (playerWaveCanvas.width !== w) playerWaveCanvas.width = w;
+  if (playerWaveCanvas.height !== h) playerWaveCanvas.height = h;
+  ensurePlayerWaveCache(w, h);
+
+  const base = playerWaveBaseCtx;
+  if (!base) return;
+
+  base.clearRect(0, 0, w, h);
+  base.fillStyle = 'rgba(255,255,255,0.02)';
+  base.fillRect(0, 0, w, h);
+
+  const track = (currentIndex >= 0 && tracks[currentIndex]) ? tracks[currentIndex] : null;
+  const peaks = track?.waveformPeaks || null;
+  if (!peaks?.minPeaks || !peaks?.maxPeaks || peaks.minPeaks.length === 0) {
+    base.strokeStyle = 'rgba(255,255,255,0.08)';
+    base.lineWidth = 1;
+    base.beginPath();
+    base.moveTo(0, h / 2);
+    base.lineTo(w, h / 2);
+    base.stroke();
+    renderPlayerWaveformOverlay();
+    return;
+  }
+
+  const minPeaks = peaks.minPeaks;
+  const maxPeaks = peaks.maxPeaks;
+  const mid = h / 2;
+
+  base.lineWidth = 1;
+  base.strokeStyle = 'rgba(74,158,255,0.95)';
+  base.beginPath();
+  for (let x = 0; x < w; x++) {
+    const t = w <= 1 ? 0 : (x / (w - 1));
+    const idx = clamp(Math.round(t * (minPeaks.length - 1)), 0, minPeaks.length - 1);
+    const y1 = mid + (minPeaks[idx] * mid);
+    const y2 = mid + (maxPeaks[idx] * mid);
+    base.moveTo(x + 0.5, y1);
+    base.lineTo(x + 0.5, y2);
+  }
+  base.stroke();
+
+  renderPlayerWaveformOverlay();
+}
+
+function renderPlayerWaveformOverlay() {
+  if (!playerWaveCanvas) return;
+  const ctx = playerWaveCanvas.getContext('2d');
+  if (!ctx) return;
+  const w = playerWaveCanvas.width || 1;
+  const h = playerWaveCanvas.height || 1;
+
+  if (playerWaveBaseCanvas) {
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(playerWaveBaseCanvas, 0, 0);
+  }
+
+  const dur = Number.isFinite(audio?.duration) ? audio.duration : 0;
+  const cur = Number.isFinite(audio?.currentTime) ? audio.currentTime : 0;
+  if (dur > 0 && cur >= 0) {
+    const p = clamp01(cur / dur);
+    const playheadX = clamp(Math.round(w * p), 0, w - 1);
+    ctx.fillStyle = 'rgba(74,158,255,0.08)';
+    ctx.fillRect(0, 0, playheadX, h);
+
+    // High-visibility playhead: glow + dark outline + bright core.
+    const x0 = clamp(playheadX - 1, 0, w - 1);
+    const x1 = clamp(playheadX + 1, 0, w - 1);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(74,158,255,0.55)';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = 'rgba(74,158,255,0.70)';
+    ctx.fillRect(playheadX, 0, 2, h);
+    ctx.restore();
+
+    // Dark outline for contrast against bright waveform.
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(x0, 0, 1, h);
+    ctx.fillRect(x1, 0, 1, h);
+
+    // Bright core line.
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillRect(playheadX, 0, 2, h);
+
+    // Small top handle (makes it visible even on flat sections).
+    const handleW = 10;
+    const handleH = 6;
+    const hx = clamp(playheadX - Math.floor(handleW / 2), 0, Math.max(0, w - handleW));
+    ctx.fillStyle = 'rgba(18,18,18,0.70)';
+    ctx.fillRect(hx, 0, handleW, handleH);
+    ctx.fillStyle = 'rgba(255,255,255,0.90)';
+    ctx.fillRect(hx + 1, 1, handleW - 2, handleH - 2);
+  }
+}
+
+function volumeLinearToDb(volumeLinear) {
+  const v = Number(volumeLinear);
+  if (!Number.isFinite(v) || v <= 0) return -Infinity;
+  return 20 * Math.log10(Math.max(v, 1e-6));
+}
+
+function updateVolumePopover(valueLinear, show) {
+  if (!playerVolPopover || !playerVolume) return;
+  if (!show) {
+    playerVolPopover.hidden = true;
+    return;
+  }
+
+  const v = clamp(Number(valueLinear), 0, 1);
+  const pct = Math.round(v * 100);
+  const db = volumeLinearToDb(v);
+  const dbText = Number.isFinite(db) ? `${db.toFixed(1)} dB` : '-inf dB';
+  playerVolPopover.textContent = `${pct}% (${dbText})`;
+
+  // Position the bubble roughly above the slider thumb.
+  const wrap = playerVolume.closest('.player-vol');
+  const wrapRect = wrap ? wrap.getBoundingClientRect() : null;
+  const rect = playerVolume.getBoundingClientRect();
+  const min = Number(playerVolume.min ?? 0);
+  const max = Number(playerVolume.max ?? 1);
+  const denom = (Number.isFinite(max - min) && (max - min) !== 0) ? (max - min) : 1;
+  const t = clamp((v - min) / denom, 0, 1);
+  const leftWithinWrap = (rect.left - (wrapRect ? wrapRect.left : rect.left)) + t * rect.width;
+  playerVolPopover.style.left = `${Math.round(leftWithinWrap)}px`;
+  playerVolPopover.hidden = false;
 }
 
 function updateReanalyzeButtonState() {
@@ -1410,8 +1612,37 @@ if (playerSeek) {
 
 if (playerVolume && audio) {
   playerVolume.value = String(audio.volume ?? 1);
+  let volScrubbing = false;
+  let hideTimer = null;
+
+  const scheduleHide = () => {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => updateVolumePopover(playerVolume.value, false), 650);
+  };
+
+  playerVolume.addEventListener('pointerdown', () => {
+    volScrubbing = true;
+    if (hideTimer) clearTimeout(hideTimer);
+    updateVolumePopover(playerVolume.value, true);
+  });
+  playerVolume.addEventListener('pointerup', () => {
+    volScrubbing = false;
+    scheduleHide();
+  });
+  playerVolume.addEventListener('pointercancel', () => {
+    volScrubbing = false;
+    scheduleHide();
+  });
+  playerVolume.addEventListener('mouseleave', () => {
+    if (!volScrubbing) scheduleHide();
+  });
+
   playerVolume.addEventListener('input', (e) => {
     audio.volume = clamp(Number(e.target.value), 0, 1);
+    updateVolumePopover(e.target.value, volScrubbing);
+  });
+  playerVolume.addEventListener('change', (e) => {
+    updateVolumePopover(e.target.value, false);
   });
 }
 
@@ -2186,8 +2417,23 @@ window.playTrack = function(index) {
   updateReanalyzeButtonState();
   updatePlayerNowPlaying();
   updatePlayerTransportUi();
-  updatePlayerNowPlaying();
-  updatePlayerTransportUi();
+
+  // Static waveform for scrubbing (computed once per track).
+  renderPlayerWaveformBase();
+  if (!track.waveformPeaks) {
+    const forIndex = index;
+    computeWaveformPeaksForTrack(track, { points: 1800 })
+      .then((peaks) => {
+        if (!peaks) return;
+        track.waveformPeaks = peaks;
+        if (currentIndex === forIndex) {
+          renderPlayerWaveformBase();
+        }
+      })
+      .catch((err) => {
+        console.warn('Waveform compute failed:', err);
+      });
+  }
 
   applyLoudnessMatchGain();
   updateDeltas();
@@ -2256,6 +2502,12 @@ window.removeTrack = function(index) {
     resetAnalysis();
     updatePlayerNowPlaying();
     updatePlayerTransportUi();
+
+    // Clear waveform cache
+    if (playerWaveBaseCtx && playerWaveBaseCanvas) {
+      playerWaveBaseCtx.clearRect(0, 0, playerWaveBaseCanvas.width || 1, playerWaveBaseCanvas.height || 1);
+    }
+    renderPlayerWaveformBase();
   }
 
   // If we removed the reference track, cancel any in-flight background analysis.
@@ -3003,6 +3255,7 @@ function syncMeterHeight() {
 function handleResize() {
   initCanvasContexts();
   syncMeterHeight();
+  renderPlayerWaveformBase();
 }
 
 window.addEventListener('resize', handleResize);
@@ -3073,46 +3326,6 @@ function draw() {
   }
 
   analyser.getByteFrequencyData(freqBuffer);
-
-  // Player bar mini waveform (realtime from analyser)
-  if (playerWaveCanvas) {
-    const ctx = playerWaveCanvas.getContext('2d');
-    if (ctx) {
-      const w = Math.max(1, playerWaveCanvas.clientWidth || playerWaveCanvas.width || 1);
-      const h = Math.max(1, playerWaveCanvas.clientHeight || playerWaveCanvas.height || 1);
-      if (playerWaveCanvas.width !== w) playerWaveCanvas.width = w;
-      if (playerWaveCanvas.height !== h) playerWaveCanvas.height = h;
-
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = 'rgba(255,255,255,0.02)';
-      ctx.fillRect(0, 0, w, h);
-
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(74,158,255,0.95)';
-      ctx.beginPath();
-      const sliceWidth = w / bufferLength;
-      let x = 0;
-      for (let i = 0; i < bufferLength; i++) {
-        const v = timeDomainBytes[i] / 128.0;
-        const y = (v * h) / 2;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-        x += sliceWidth;
-      }
-      ctx.stroke();
-
-      const dur = Number.isFinite(audio?.duration) ? audio.duration : 0;
-      const cur = Number.isFinite(audio?.currentTime) ? audio.currentTime : 0;
-      if (dur > 0 && cur >= 0) {
-        const p = clamp01(cur / dur);
-        ctx.fillStyle = 'rgba(74,158,255,0.10)';
-        ctx.fillRect(0, 0, w * p, h);
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.fillRect(w * p, 0, 1, h);
-      }
-    }
-  }
-
 
   let dominantHue = 150;
   let spectralEnergy = 0;
