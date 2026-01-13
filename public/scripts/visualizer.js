@@ -2105,6 +2105,11 @@ function syncMeterHeight() {
     return;
   }
 
+  // Reset before measuring to avoid any chance of a feedback loop (e.g. refresh actions
+  // that trigger displayAnalysis -> syncMeterHeight repeatedly).
+  meterStack.style.height = 'auto';
+  meterStack.style.maxHeight = 'none';
+
   // Important: only sync the meter stack to the canvas height.
   // Forcing the left column height can create a flexbox feedback loop where
   // the measured height increases slightly on each call (e.g., when analysis refresh
@@ -2114,8 +2119,12 @@ function syncMeterHeight() {
     leftColumn.style.maxHeight = 'none';
   }
 
+  // Prefer content height to avoid flexbox stretch affecting the measurement.
+  const contentHeight = Math.round(canvasStack.scrollHeight || 0);
   const rect = canvasStack.getBoundingClientRect();
-  if (rect.height > 0) {
+  const targetHeight = contentHeight > 0 ? contentHeight : Math.round(rect.height || 0);
+
+  if (targetHeight > 0) {
     const setHeight = (el, targetHeight) => {
       if (!el) return;
       const styles = window.getComputedStyle(el);
@@ -2130,7 +2139,7 @@ function syncMeterHeight() {
       el.style.maxHeight = height + 'px';
     };
 
-    setHeight(meterStack, rect.height);
+    setHeight(meterStack, targetHeight);
   }
 }
 

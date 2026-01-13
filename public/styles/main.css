@@ -489,7 +489,8 @@ h1 { margin-top: 0; }
 .visualizer-stack {
   display: flex;
   gap: 16px;
-  align-items: stretch;
+  /* Avoid stretch feedback loops when JS syncs heights */
+  align-items: flex-start;
 }
 
 .meter-column {
