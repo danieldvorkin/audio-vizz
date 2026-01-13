@@ -292,6 +292,144 @@ const songScoreDetailsEl = document.getElementById('songScoreDetails');
 const refreshScoreBtn = document.getElementById('refreshScoreBtn');
 const saveScoreBtn = document.getElementById('saveScoreBtn');
 
+// In-page routing (single document) so audio keeps playing.
+const routeMixerEl = document.getElementById('route-mixer');
+const routeGlossaryEl = document.getElementById('route-glossary');
+const routeHistoryEl = document.getElementById('route-history');
+
+// History view elements (present only in mixer.html route)
+const historyTableBody = document.getElementById('historyTableBody');
+const historyEmptyEl = document.getElementById('historyEmpty');
+const historySearchEl = document.getElementById('historySearch');
+const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+
+let historyCache = [];
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function formatLocalDateTime(ts) {
+  if (!Number.isFinite(ts)) return '--';
+  try {
+    return new Date(ts).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch {
+    return '--';
+  }
+}
+
+function scoreBadgeHtml(score, label) {
+  const s = Number.isFinite(score) ? Math.round(clamp(score, 0, 100)) : null;
+  if (s == null) return '<span class="badge text-bg-secondary">--</span>';
+
+  let cls = 'text-bg-danger';
+  if (s >= 90) cls = 'text-bg-success';
+  else if (s >= 80) cls = 'text-bg-primary';
+  else if (s >= 70) cls = 'text-bg-info';
+  else if (s >= 60) cls = 'text-bg-warning';
+
+  return `<span class="badge ${cls}">${s}</span> <span style="color: rgba(255,255,255,0.75);">${escapeHtml(label || '')}</span>`;
+}
+
+function renderHistoryTable(rows) {
+  if (!historyTableBody || !historyEmptyEl) return;
+  const q = (historySearchEl?.value || '').trim().toLowerCase();
+
+  const filtered = (Array.isArray(rows) ? rows : []).filter(r => {
+    if (!q) return true;
+    const hay = [
+      r.trackName,
+      r.referenceName,
+      r.genreName,
+      r.genreKey,
+      r.trackKey,
+      r.trackScale,
+      r.breakdown
+    ].filter(Boolean).join(' | ').toLowerCase();
+    return hay.includes(q);
+  });
+
+  historyEmptyEl.style.display = filtered.length ? 'none' : 'block';
+  historyTableBody.innerHTML = '';
+
+  for (const r of filtered) {
+    const trackName = escapeHtml(r.trackName || 'Unknown');
+    const keyLine = `${escapeHtml(r.trackKey || '--')} ${escapeHtml(r.trackScale || '')}`;
+
+    const contextBits = [];
+    if (r.referenceName) contextBits.push(`<div><strong>Ref:</strong> ${escapeHtml(r.referenceName)}</div>`);
+    if (r.genreName || (r.genreKey && r.genreKey !== 'none')) contextBits.push(`<div><strong>Genre:</strong> ${escapeHtml(r.genreName || r.genreKey)}</div>`);
+    if (!contextBits.length) contextBits.push('<div style="color: rgba(255,255,255,0.65);">(No ref / no genre)</div>');
+
+    const scoreLine = `${scoreBadgeHtml(r.score, r.label)}<div style="color: rgba(255,255,255,0.65); font-size: 0.85rem; margin-top: 4px;">${escapeHtml(r.breakdown || '')}</div>`;
+    const savedLine = escapeHtml(formatLocalDateTime(r.savedAt));
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${trackName}<div style="color: rgba(255,255,255,0.65); font-size: 0.85rem; margin-top: 4px;">${keyLine}</div></td>
+      <td>${contextBits.join('')}</td>
+      <td>${scoreLine}</td>
+      <td>${savedLine}</td>
+      <td class="text-end"><button class="btn btn-sm btn-outline-light" data-action="delete-score" data-id="${escapeHtml(r.id)}">Delete</button></td>
+    `;
+    historyTableBody.appendChild(tr);
+  }
+}
+
+async function refreshHistory() {
+  try {
+    const rows = await dbGetAllScoreRecords();
+    historyCache = Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.warn('Failed to load score history:', err);
+    historyCache = [];
+  }
+  historyCache.sort((a, b) => (b?.savedAt || 0) - (a?.savedAt || 0));
+  renderHistoryTable(historyCache);
+}
+
+function setRoute(routeName) {
+  const route = (routeName || '').toLowerCase();
+  if (routeMixerEl) routeMixerEl.hidden = route !== 'mixer';
+  if (routeGlossaryEl) routeGlossaryEl.hidden = route !== 'glossary';
+  if (routeHistoryEl) routeHistoryEl.hidden = route !== 'history';
+
+  // Update navbar active state
+  try {
+    const links = document.querySelectorAll('.meterlab-navbar a.nav-link[href^="#"]');
+    links.forEach((a) => {
+      const href = (a.getAttribute('href') || '').replace('#', '');
+      const isActive = href === route;
+      a.classList.toggle('active', isActive);
+      if (isActive) a.setAttribute('aria-current', 'page');
+      else a.removeAttribute('aria-current');
+    });
+  } catch {
+    /* ignore */
+  }
+
+  if (route === 'history') {
+    refreshHistory();
+  }
+}
+
+function getRouteFromHash() {
+  const raw = (window.location.hash || '').replace('#', '').trim().toLowerCase();
+  if (raw === 'glossary' || raw === 'history' || raw === 'mixer') return raw;
+  return 'mixer';
+}
+
 // Capture default tooltip text so we can append dynamic hints safely.
 const keyMetricTileEl = keyEl?.closest?.('.metric') || null;
 const scaleMetricTileEl = scaleEl?.closest?.('.metric') || null;
@@ -1702,6 +1840,47 @@ if (saveScoreBtn) {
   });
 }
 
+if (historySearchEl) {
+  historySearchEl.addEventListener('input', () => {
+    renderHistoryTable(historyCache);
+  });
+}
+
+if (clearHistoryBtn) {
+  clearHistoryBtn.addEventListener('click', async () => {
+    const ok = confirm('Clear all saved score snapshots?');
+    if (!ok) return;
+    try {
+      await dbClearScoreRecords();
+      await refreshHistory();
+    } catch (err) {
+      alert(`Failed to clear history: ${err.message || err}`);
+    }
+  });
+}
+
+if (historyTableBody) {
+  historyTableBody.addEventListener('click', async (e) => {
+    const btn = e.target?.closest?.('button[data-action="delete-score"]');
+    if (!btn) return;
+    const id = btn.getAttribute('data-id');
+    if (!id) return;
+    const ok = confirm('Delete this snapshot?');
+    if (!ok) return;
+
+    try {
+      await dbDeleteScoreRecord(id);
+      await refreshHistory();
+    } catch (err) {
+      alert(`Failed to delete: ${err.message || err}`);
+    }
+  });
+}
+
+window.addEventListener('hashchange', () => {
+  setRoute(getRouteFromHash());
+});
+
 // Restore persisted playlist tracks (survives refresh).
 restoreTracksFromDb();
 
@@ -2981,6 +3160,9 @@ window.addEventListener('load', () => {
     if (CHROMA_CALIBRATION_SHIFT) {
       console.log('[MeterLab] Chroma calibrated shift:', CHROMA_CALIBRATION_SHIFT);
     }
+
+    // Single-page routing initial state
+    setRoute(getRouteFromHash());
     return;
   }
 
@@ -2994,6 +3176,8 @@ window.addEventListener('load', () => {
       if (CHROMA_CALIBRATION_SHIFT) {
         console.log('[MeterLab] Chroma calibrated shift:', CHROMA_CALIBRATION_SHIFT);
       }
+
+      setRoute(getRouteFromHash());
       status.textContent = 'Idle';
       status.className = 'status';
     } else {

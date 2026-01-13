@@ -27,18 +27,20 @@
       <div class="collapse navbar-collapse" id="meterlabNav">
         <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
           <li class="nav-item">
-            <a class="nav-link active" aria-current="page" href="./mixer.html">Mixer</a>
+            <a class="nav-link active" aria-current="page" href="#mixer">Mixer</a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="./glossary.html">Glossary</a>
+            <a class="nav-link" href="#glossary">Glossary</a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="./history.html">History</a>
+            <a class="nav-link" href="#history">History</a>
           </li>
         </ul>
       </div>
     </div>
   </nav>
+
+  <div id="route-mixer" class="route-panel">
 
   <div class="analysis-panel">
     <div class="analysis-overlay" id="analysisOverlay" aria-hidden="true">
@@ -199,7 +201,6 @@
         </div>
       </div>
 
-      <audio id="audio" controls></audio>
     </div>
 
     <div class="right-column">
@@ -266,6 +267,97 @@
         </div>
       </div>
     </div>
+  </div>
+
+  </div>
+
+  <div id="route-glossary" class="route-panel" hidden>
+    <main class="container glossary">
+      <div class="analysis-panel">
+        <div class="d-flex justify-content-between align-items-center" style="margin-bottom: 10px;">
+          <h3 style="margin: 0;">Glossary</h3>
+          <span class="status ready">Reference</span>
+        </div>
+        <p class="glossary-lead">
+          MeterLab’s stats are quick “signals” about a track. They’re best used for comparison and decision-making (e.g., matching a playlist, checking mix balance), not as absolute truth.
+        </p>
+      </div>
+
+      <div class="analysis-panel">
+        <h3 class="glossary-heading">Musical</h3>
+        <div class="glossary-item">
+          <h4>Key</h4>
+          <p><strong>What it is:</strong> The most likely tonic (C, C#, D…).</p>
+          <p><strong>Why it matters:</strong> Helpful for harmonic mixing, mashups, and choosing compatible samples.</p>
+          <p><strong>Genre notes:</strong> EDM/house/DJ sets often benefit from key-matching; jazz and some live recordings may modulate and confuse single-key estimation.</p>
+        </div>
+        <div class="glossary-item">
+          <h4>Scale (Major/Minor + Modes)</h4>
+          <p><strong>What it is:</strong> A best-fit scale quality (major/minor) and common modes (dorian, phrygian, lydian, mixolydian, locrian).</p>
+          <p><strong>Why it matters:</strong> Gives a hint of “mood” (bright vs dark) and common chord vocabulary.</p>
+          <p><strong>Genre notes:</strong> Rock/blues often leans mixolydian; metal can lean phrygian; funk can show dorian; pop is frequently major/minor.</p>
+        </div>
+        <div class="glossary-item">
+          <h4>Certainty</h4>
+          <p><strong>What it is:</strong> How separated the top key/mode guess is from the runner-up guesses (a “trust meter”, not a guarantee of correctness).</p>
+          <p><strong>Why it matters:</strong> Low certainty usually means: weak tonal center, lots of noise/percussion, modulation, or a pitch set shared by multiple modes (relative ambiguity).</p>
+          <p><strong>Genre notes:</strong> Ambient/drone and very percussive tracks often produce lower certainty.</p>
+        </div>
+      </div>
+
+      <div class="analysis-panel">
+        <h3 class="glossary-heading">Tempo</h3>
+        <div class="glossary-item">
+          <h4>BPM</h4>
+          <p><strong>What it is:</strong> Estimated tempo (beats per minute) from onset periodicity (transient pulses).</p>
+          <p><strong>Why it matters:</strong> Useful for beatmatching, planning transitions, and picking time-synced effects.</p>
+          <p><strong>Genre notes:</strong> EDM/house/techno typically yields strong BPM confidence; classical, rubato, and ambient may not have a stable tempo.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="route-history" class="route-panel" hidden>
+    <main class="container">
+      <div class="analysis-panel">
+        <div class="d-flex justify-content-between align-items-start gap-3" style="margin-bottom: 10px;">
+          <div>
+            <h3 style="margin: 0;">Score History</h3>
+            <p style="margin: 8px 0 0 0; color: rgba(255,255,255,0.75); max-width: 70ch;">
+              Saved snapshots of Song Score for a track vs a reference and/or genre.
+            </p>
+          </div>
+          <div class="d-flex align-items-end gap-2">
+            <div>
+              <label for="historySearch" class="score-panel-label">Search</label>
+              <input id="historySearch" class="form-control form-control-sm meterlab-select" placeholder="Track name, genre, reference…" />
+            </div>
+            <button id="clearHistoryBtn" class="btn btn-sm btn-outline-light" type="button">Clear</button>
+          </div>
+        </div>
+
+        <div id="historyEmpty" class="playlist-empty" style="display:none;">No saved score snapshots yet. Mixer → Song Score → Save snapshot.</div>
+
+        <div class="table-responsive">
+          <table class="table table-dark table-striped align-middle" style="margin: 0;">
+            <thead>
+              <tr>
+                <th style="min-width: 240px;">Track</th>
+                <th style="min-width: 220px;">Context</th>
+                <th style="min-width: 140px;">Score</th>
+                <th style="min-width: 170px;">Saved</th>
+                <th style="min-width: 110px;"></th>
+              </tr>
+            </thead>
+            <tbody id="historyTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="player-bar" aria-label="Player">
+    <audio id="audio" controls></audio>
   </div>
 
   <script src="https://unpkg.com/meyda@5.6.3/dist/web/meyda.min.js" crossorigin="anonymous"></script>
