@@ -45,6 +45,20 @@
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px;">
       <h3 style="margin: 0;">Track Analysis</h3>
       <div style="display: flex; align-items: center; gap: 12px;">
+        <button
+          id="reanalyzeBtn"
+          class="icon-button"
+          type="button"
+          aria-label="Re-analyze current track"
+          data-bs-toggle="popover"
+          data-bs-placement="top"
+          data-bs-content="Re-analyze"
+          disabled
+        >
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M17.65 6.35A7.95 7.95 0 0012 4V1L7 6l5 5V7a5 5 0 11-5 5H5a7 7 0 107.75-6.95 7.9 7.9 0 014.9 2.3z"></path>
+          </svg>
+        </button>
         <span class="status" id="status">Idle</span>
       </div>
     </div>
@@ -65,6 +79,41 @@
         <strong>Reference</strong>
         <span id="referenceName">None</span>
       </div>
+    </div>
+
+    <div class="score-panel" aria-label="Song score">
+      <div class="score-panel-header">
+        <div>
+          <div class="score-panel-title">Song Score</div>
+          <div class="score-panel-subtitle">Compares your current track to a reference track (if set), and to typical genre targets.</div>
+        </div>
+        <div class="score-panel-controls">
+          <div class="score-panel-controls-row">
+            <div class="score-panel-controls-group">
+              <label for="genreSelect" class="score-panel-label">Genre</label>
+              <select id="genreSelect" class="form-select form-select-sm meterlab-select" aria-label="Select genre for scoring">
+            <option value="pop" selected>Pop</option>
+            <option value="edm">EDM</option>
+            <option value="hiphop">Hip-Hop</option>
+            <option value="rock">Rock</option>
+            <option value="jazz">Jazz</option>
+            <option value="classical">Classical</option>
+            <option value="voice">Podcast / Voice</option>
+            <option value="none">None (reference only)</option>
+              </select>
+            </div>
+            <button id="refreshScoreBtn" class="btn btn-sm btn-outline-light score-refresh-btn" type="button" aria-label="Refresh score">Refresh score</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="score-panel-body">
+        <div class="score-panel-score" id="songScoreValue">--</div>
+        <div class="score-panel-grade" id="songScoreLabel">Load a track to score</div>
+        <div class="score-panel-breakdown" id="songScoreBreakdown">--</div>
+      </div>
+
+      <div class="score-panel-details" id="songScoreDetails" aria-live="polite">--</div>
     </div>
     <div class="analysis-grid">
       <div class="metric" tabindex="0" data-tooltip="Musical key with the highest correlation from the chroma profile.">

@@ -230,9 +230,18 @@ const canvasStack = document.querySelector('.canvas-stack');
 const leftColumn = document.querySelector('.left-column');
 const analysisPanel = document.querySelector('.analysis-panel');
 const analysisOverlay = document.getElementById('analysisOverlay');
+const reanalyzeBtn = document.getElementById('reanalyzeBtn');
 const loudnessMatchToggle = document.getElementById('loudnessMatchToggle');
 const loudnessMatchAmountEl = document.getElementById('loudnessMatchAmount');
 const loudnessMatchRefreshBtn = document.getElementById('loudnessMatchRefresh');
+
+// Song score elements
+const genreSelect = document.getElementById('genreSelect');
+const songScoreValueEl = document.getElementById('songScoreValue');
+const songScoreLabelEl = document.getElementById('songScoreLabel');
+const songScoreBreakdownEl = document.getElementById('songScoreBreakdown');
+const songScoreDetailsEl = document.getElementById('songScoreDetails');
+const refreshScoreBtn = document.getElementById('refreshScoreBtn');
 
 // Constants
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -241,6 +250,412 @@ const MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34,
 const SAMPLE_YIELD_INTERVAL = 131072;
 const FRAME_YIELD_INTERVAL = 32;
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const clamp01 = (value) => clamp(value, 0, 1);
+
+// Song score (genre targets + optional reference match)
+const GENRE_PROFILES = {
+  pop: {
+    name: 'Pop',
+    targets: { loudness: -14, crestDb: 8.0, brightness: 2600, rolloff: 9000, flatness: 0.26 },
+    tolerances: { loudness: 3.5, crestDb: 3.0, brightness: 900, rolloff: 1800, flatness: 0.18 }
+  },
+  edm: {
+    name: 'EDM',
+    targets: { loudness: -8.5, crestDb: 6.0, brightness: 3200, rolloff: 10500, flatness: 0.32 },
+    tolerances: { loudness: 3.0, crestDb: 2.5, brightness: 1000, rolloff: 2000, flatness: 0.20 }
+  },
+  hiphop: {
+    name: 'Hip-Hop',
+    targets: { loudness: -10.5, crestDb: 7.0, brightness: 2200, rolloff: 8500, flatness: 0.30 },
+    tolerances: { loudness: 3.5, crestDb: 3.0, brightness: 900, rolloff: 1800, flatness: 0.20 }
+  },
+  rock: {
+    name: 'Rock',
+    targets: { loudness: -11.5, crestDb: 9.0, brightness: 2700, rolloff: 9500, flatness: 0.24 },
+    tolerances: { loudness: 3.5, crestDb: 3.5, brightness: 900, rolloff: 2000, flatness: 0.18 }
+  },
+  jazz: {
+    name: 'Jazz',
+    targets: { loudness: -18.0, crestDb: 12.0, brightness: 2100, rolloff: 7800, flatness: 0.20 },
+    tolerances: { loudness: 4.0, crestDb: 4.0, brightness: 900, rolloff: 1800, flatness: 0.16 }
+  },
+  classical: {
+    name: 'Classical',
+    targets: { loudness: -23.0, crestDb: 16.0, brightness: 1800, rolloff: 6500, flatness: 0.16 },
+    tolerances: { loudness: 4.5, crestDb: 5.0, brightness: 900, rolloff: 1800, flatness: 0.14 }
+  },
+  voice: {
+    name: 'Podcast / Voice',
+    targets: { loudness: -16.0, crestDb: 10.0, brightness: 1800, rolloff: 6000, flatness: 0.18 },
+    tolerances: { loudness: 3.0, crestDb: 4.0, brightness: 800, rolloff: 1500, flatness: 0.14 }
+  }
+};
+
+const SCORE_WEIGHTS = {
+  loudness: 0.32,
+  crestDb: 0.26,
+  brightness: 0.14,
+  rolloff: 0.14,
+  flatness: 0.14,
+  bpm: 0.08
+};
+
+function safeGetLocalStorage(key) {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetLocalStorage(key, value) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function metricScore(current, target, tolerance) {
+  if (!Number.isFinite(current) || !Number.isFinite(target) || !Number.isFinite(tolerance) || tolerance <= 0) return null;
+  const err = Math.abs(current - target) / tolerance;
+  const normalized = clamp01(err);
+  return 100 * (1 - normalized);
+}
+
+function formatMaybeSignedDelta(value, unit) {
+  if (!Number.isFinite(value)) return '--';
+  const sign = value > 0 ? '+' : (value < 0 ? '−' : '±');
+  const abs = Math.abs(value);
+  const formatted = Number.isFinite(abs) ? abs.toFixed(1) : '--';
+  return `${sign}${formatted}${unit || ''}`;
+}
+
+function advisoryForMetric(metric, delta, scope) {
+  const where = scope === 'ref' ? 'vs reference' : 'vs genre target';
+  if (!Number.isFinite(delta)) return null;
+
+  switch (metric) {
+    case 'loudness': {
+      if (delta > 1.2) return `Too loud ${where}. Lower limiter/clipper gain or back off bus compression.`;
+      if (delta < -1.2) return `Too quiet ${where}. Increase master gain/limiting, or rebalance track levels.`;
+      return `Loudness is close ${where}.`;
+    }
+    case 'crestDb': {
+      if (delta < -1.2) return `Dynamics look tight ${where}. Ease compression/limiting; let transients through.`;
+      if (delta > 1.2) return `Dynamics are very open ${where}. If it feels weak, add gentle bus compression.`;
+      return `Dynamics are close ${where}.`;
+    }
+    case 'brightness': {
+      if (delta > 350) return `Brighter ${where}. Tame 6–12 kHz, de-ess, or reduce harsh synth/cymbals.`;
+      if (delta < -350) return `Darker ${where}. Add presence/air (EQ 3–10 kHz) or brighten key elements.`;
+      return `Brightness is close ${where}.`;
+    }
+    case 'rolloff': {
+      if (delta > 500) return `More high-end energy ${where}. Check hiss/harshness; smooth the top end.`;
+      if (delta < -500) return `Less high-end energy ${where}. Add air, improve cymbal/vocal presence.`;
+      return `Top-end roll-off is close ${where}.`;
+    }
+    case 'flatness': {
+      if (delta > 0.06) return `More noise-like ${where}. Reduce wideband noise/hiss; tighten resonance or reverb.`;
+      if (delta < -0.06) return `More tonal ${where}. If it’s boxy, add subtle texture or widen frequency spread.`;
+      return `Tonal/noise balance is close ${where}.`;
+    }
+    case 'bpm': {
+      if (Math.abs(delta) > 6) return `Tempo estimate differs ${where}. If wrong, ignore; BPM detection can miss.`;
+      return `Tempo is close ${where}.`;
+    }
+    default:
+      return null;
+  }
+}
+
+function weightedAverageScore(parts) {
+  let sum = 0;
+  let wsum = 0;
+  for (const p of parts) {
+    if (!p || !Number.isFinite(p.score) || !Number.isFinite(p.weight) || p.weight <= 0) continue;
+    sum += p.score * p.weight;
+    wsum += p.weight;
+  }
+  if (wsum <= 0) return null;
+  return sum / wsum;
+}
+
+function scoreLabel(score) {
+  if (!Number.isFinite(score)) return '--';
+  if (score >= 90) return 'Excellent';
+  if (score >= 80) return 'Great';
+  if (score >= 70) return 'Good';
+  if (score >= 60) return 'Fair';
+  return 'Needs work';
+}
+
+function computeScoreAgainstTargets(analysis, targets, tolerances, includeBpm = false) {
+  if (!analysis || !targets || !tolerances) return { score: null, perMetric: {} };
+
+  const perMetric = {
+    loudness: metricScore(analysis.loudness, targets.loudness, tolerances.loudness),
+    crestDb: metricScore(analysis.crestDb, targets.crestDb, tolerances.crestDb),
+    brightness: metricScore(analysis.brightness, targets.brightness, tolerances.brightness),
+    rolloff: metricScore(analysis.rolloff, targets.rolloff, tolerances.rolloff),
+    flatness: metricScore(analysis.flatness, targets.flatness, tolerances.flatness)
+  };
+
+  if (includeBpm) {
+    perMetric.bpm = metricScore(analysis.bpm, targets.bpm, tolerances.bpm);
+  }
+
+  const parts = Object.entries(perMetric).map(([k, v]) => ({ metric: k, score: v, weight: SCORE_WEIGHTS[k] || 0 }));
+  const score = weightedAverageScore(parts);
+  return { score, perMetric };
+}
+
+function computeSongScore(current, reference, genreKey) {
+  if (!current) {
+    return {
+      score: null,
+      label: 'Load a track to score',
+      breakdown: '--'
+    };
+  }
+
+  const hasReference = !!reference;
+  const wantsGenre = genreKey && genreKey !== 'none' && GENRE_PROFILES[genreKey];
+  const genreProfile = wantsGenre ? GENRE_PROFILES[genreKey] : null;
+
+  let referenceScore = null;
+  let genreScore = null;
+
+  if (hasReference) {
+    const refTargets = {
+      loudness: reference.loudness,
+      crestDb: reference.crestDb,
+      brightness: reference.brightness,
+      rolloff: reference.rolloff,
+      flatness: reference.flatness,
+      bpm: reference.bpm
+    };
+    const refTolerances = {
+      loudness: 1.6,
+      crestDb: 1.8,
+      brightness: 550,
+      rolloff: 1100,
+      flatness: 0.10,
+      bpm: 4.0
+    };
+    referenceScore = computeScoreAgainstTargets(current, refTargets, refTolerances, true);
+  }
+
+  if (genreProfile) {
+    genreScore = computeScoreAgainstTargets(current, genreProfile.targets, genreProfile.tolerances, false);
+  }
+
+  let finalScore = null;
+  if (referenceScore?.score != null && genreScore?.score != null) {
+    finalScore = 0.7 * referenceScore.score + 0.3 * genreScore.score;
+  } else if (referenceScore?.score != null) {
+    finalScore = referenceScore.score;
+  } else if (genreScore?.score != null) {
+    finalScore = genreScore.score;
+  }
+
+  if (finalScore == null) {
+    return {
+      score: null,
+      label: hasReference ? 'Set a genre for extra context' : 'Set a reference or pick a genre',
+      breakdown: hasReference ? 'Reference match available, but missing metrics.' : '--',
+      details: null
+    };
+  }
+
+  const label = scoreLabel(finalScore);
+
+  const metricFriendly = {
+    loudness: 'Loudness',
+    crestDb: 'Dynamics',
+    brightness: 'Brightness',
+    rolloff: 'Roll-off',
+    flatness: 'Tonal balance',
+    bpm: 'Tempo'
+  };
+
+  const combinedPerMetric = {};
+  if (referenceScore?.perMetric) {
+    for (const [k, v] of Object.entries(referenceScore.perMetric)) {
+      if (Number.isFinite(v)) combinedPerMetric[`ref_${k}`] = v;
+    }
+  }
+  if (genreScore?.perMetric) {
+    for (const [k, v] of Object.entries(genreScore.perMetric)) {
+      if (Number.isFinite(v)) combinedPerMetric[`genre_${k}`] = v;
+    }
+  }
+
+  let lowest = null;
+  for (const [key, value] of Object.entries(combinedPerMetric)) {
+    if (!Number.isFinite(value)) continue;
+    if (!lowest || value < lowest.value) lowest = { key, value };
+  }
+
+  const basisParts = [];
+  if (referenceScore?.score != null) basisParts.push(`Ref ${Math.round(referenceScore.score)}`);
+  if (genreScore?.score != null) basisParts.push(`${genreProfile?.name || 'Genre'} ${Math.round(genreScore.score)}`);
+  const basisText = basisParts.length ? basisParts.join(' · ') : '--';
+
+  let lowestText = '';
+  if (lowest) {
+    const [scope, metric] = lowest.key.split('_');
+    const prefix = scope === 'ref' ? 'Ref' : 'Genre';
+    lowestText = ` | Lowest: ${prefix} ${metricFriendly[metric] || metric} ${Math.round(lowest.value)}`;
+  }
+
+  const details = {
+    basis: {
+      hasReference: referenceScore?.score != null,
+      hasGenre: genreScore?.score != null,
+      genreName: genreProfile?.name || null
+    },
+    current,
+    reference: hasReference ? reference : null,
+    genreProfile,
+    referenceScore,
+    genreScore
+  };
+
+  return {
+    score: finalScore,
+    label,
+    breakdown: `${basisText}${lowestText}`,
+    details
+  };
+}
+
+function updateSongScoreUi() {
+  if (!songScoreValueEl || !songScoreLabelEl || !songScoreBreakdownEl) return;
+
+  const current = (currentIndex >= 0 && tracks[currentIndex]) ? tracks[currentIndex].analysis : null;
+  const reference = (referenceIndex >= 0 && tracks[referenceIndex]) ? tracks[referenceIndex].analysis : null;
+  const genreKey = genreSelect ? genreSelect.value : 'pop';
+  const result = computeSongScore(current, reference, genreKey);
+
+  if (!Number.isFinite(result?.score)) {
+    songScoreValueEl.textContent = '--';
+    songScoreLabelEl.textContent = result?.label || '--';
+    songScoreBreakdownEl.textContent = result?.breakdown || '--';
+    if (songScoreDetailsEl) songScoreDetailsEl.textContent = '--';
+    return;
+  }
+
+  const rounded = Math.round(clamp(result.score, 0, 100));
+  songScoreValueEl.textContent = `${rounded}`;
+  songScoreLabelEl.textContent = result.label;
+  songScoreBreakdownEl.textContent = result.breakdown;
+
+  if (songScoreDetailsEl) {
+    const details = result.details;
+    if (!details) {
+      songScoreDetailsEl.textContent = '--';
+    } else {
+      const rows = [];
+      const metricMeta = [
+        {
+          key: 'loudness',
+          label: 'Loudness',
+          fmt: (v) => Number.isFinite(v) ? `${v.toFixed(1)} LUFS` : '--',
+          unitDelta: ' LUFS'
+        },
+        {
+          key: 'crestDb',
+          label: 'Dynamics (crest)',
+          fmt: (v) => Number.isFinite(v) ? `${v.toFixed(1)} dB` : '--',
+          unitDelta: ' dB'
+        },
+        {
+          key: 'brightness',
+          label: 'Brightness',
+          fmt: (v) => formatHz(v),
+          unitDelta: ' Hz'
+        },
+        {
+          key: 'rolloff',
+          label: 'Roll-off',
+          fmt: (v) => formatHz(v),
+          unitDelta: ' Hz'
+        },
+        {
+          key: 'flatness',
+          label: 'Tonal balance',
+          fmt: (v) => Number.isFinite(v) ? formatPercent(v) : '--',
+          unitDelta: ''
+        },
+        {
+          key: 'bpm',
+          label: 'Tempo',
+          fmt: (v) => Number.isFinite(v) ? `${Math.round(v)} BPM` : '--',
+          unitDelta: ' BPM'
+        }
+      ];
+
+      const currentA = details.current || {};
+      const refA = details.reference || {};
+
+      const wantsGenre = !!details.genreScore?.score && details.genreProfile;
+      const wantsRef = !!details.referenceScore?.score && details.reference;
+
+      for (const m of metricMeta) {
+        if (m.key === 'bpm' && !wantsRef) continue;
+        const currentVal = currentA[m.key];
+        const refTarget = wantsRef ? refA[m.key] : null;
+        const genreTarget = wantsGenre ? details.genreProfile.targets[m.key] : null;
+
+        const parts = [];
+        parts.push(`<strong>Current</strong>: ${m.fmt(currentVal)}`);
+
+        if (wantsRef && Number.isFinite(refTarget) && Number.isFinite(currentVal)) {
+          const delta = currentVal - refTarget;
+          const deltaText = m.key === 'flatness'
+            ? `${delta > 0 ? '+' : (delta < 0 ? '−' : '±')}${Math.abs(delta).toFixed(2)}`
+            : formatMaybeSignedDelta(delta, m.unitDelta);
+          parts.push(`<strong>Ref</strong>: ${m.fmt(refTarget)} (Δ ${deltaText})`);
+          const tip = advisoryForMetric(m.key, delta, 'ref');
+          if (tip) parts.push(`<span>${tip}</span>`);
+        } else if (wantsGenre && Number.isFinite(genreTarget) && Number.isFinite(currentVal)) {
+          const delta = currentVal - genreTarget;
+          const deltaText = m.key === 'flatness'
+            ? `${delta > 0 ? '+' : (delta < 0 ? '−' : '±')}${Math.abs(delta).toFixed(2)}`
+            : formatMaybeSignedDelta(delta, m.unitDelta);
+          parts.push(`<strong>Target</strong>: ${m.fmt(genreTarget)} (Δ ${deltaText})`);
+          const tip = advisoryForMetric(m.key, delta, 'genre');
+          if (tip) parts.push(`<span>${tip}</span>`);
+        }
+
+        rows.push(`
+          <div class="score-detail-row">
+            <div class="score-detail-metric">${m.label}</div>
+            <div class="score-detail-text">${parts.join(' · ')}</div>
+          </div>
+        `);
+      }
+
+      if (!rows.length) {
+        songScoreDetailsEl.textContent = '--';
+      } else {
+        songScoreDetailsEl.innerHTML = rows.join('');
+      }
+    }
+  }
+}
+
+function resetSongScoreUi() {
+  if (!songScoreValueEl || !songScoreLabelEl || !songScoreBreakdownEl) return;
+  songScoreValueEl.textContent = '--';
+  songScoreLabelEl.textContent = 'Load a track to score';
+  songScoreBreakdownEl.textContent = '--';
+  if (songScoreDetailsEl) songScoreDetailsEl.textContent = '--';
+}
 
 const yieldToMain = () => new Promise(resolve => {
   if (typeof requestAnimationFrame === 'function') {
@@ -259,6 +674,42 @@ const formatDbfs = (value) => {
   if (!Number.isFinite(value)) return '--';
   return value.toFixed(1) + ' dBFS';
 };
+
+function isCurrentlyPlaying() {
+  if (!audio) return false;
+  return !audio.paused && !audio.ended;
+}
+
+function updateReanalyzeButtonState() {
+  if (!reanalyzeBtn) return;
+  reanalyzeBtn.disabled = !(currentIndex >= 0 && isCurrentlyPlaying());
+}
+
+if (reanalyzeBtn) {
+  reanalyzeBtn.addEventListener('click', async () => {
+    updateReanalyzeButtonState();
+    if (reanalyzeBtn.disabled) return;
+
+    const track = tracks[currentIndex];
+    if (!track) return;
+
+    initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') {
+      try { await audioCtx.resume(); } catch (err) { /* ignore */ }
+    }
+
+    track.analysis = null;
+    persistTrack(track);
+    const runId = ++analysisRunId;
+    analyzeTrack(track, runId);
+  });
+}
+
+if (audio) {
+  audio.addEventListener('play', updateReanalyzeButtonState);
+  audio.addEventListener('pause', updateReanalyzeButtonState);
+  audio.addEventListener('ended', updateReanalyzeButtonState);
+}
 
 const formatLoudness = (value) => {
   if (!Number.isFinite(value)) return '--';
@@ -780,6 +1231,24 @@ function initPlaylistPopovers() {
 // Initialize any static popovers (e.g., meter controls) on first load.
 initPlaylistPopovers();
 
+// Restore last selected genre
+if (genreSelect) {
+  const saved = safeGetLocalStorage('meterlab.genre');
+  if (saved && (saved === 'none' || GENRE_PROFILES[saved])) {
+    genreSelect.value = saved;
+  }
+  genreSelect.addEventListener('change', () => {
+    safeSetLocalStorage('meterlab.genre', genreSelect.value);
+    updateSongScoreUi();
+  });
+}
+
+if (refreshScoreBtn) {
+  refreshScoreBtn.addEventListener('click', () => {
+    updateSongScoreUi();
+  });
+}
+
 // Restore persisted playlist tracks (survives refresh).
 restoreTracksFromDb();
 
@@ -890,6 +1359,7 @@ window.toggleTrackPlayback = function(index) {
   }
 
   renderPlaylist();
+  updateReanalyzeButtonState();
 };
 
 window.setReference = async function(index) {
@@ -904,6 +1374,7 @@ window.setReference = async function(index) {
     renderPlaylist();
     updateDeltas();
     applyLoudnessMatchGain();
+    updateSongScoreUi();
     return;
   }
 
@@ -914,15 +1385,16 @@ window.setReference = async function(index) {
   const track = tracks[index];
   if (!track) {
     updateDeltas();
+    applyLoudnessMatchGain();
     return;
   }
 
   // Ensure analysis exists for the reference, without interrupting the current UI analysis.
   if (!track.analysis) {
-    const runId = ++backgroundAnalysisRunId;
+    const bgRunId = ++backgroundAnalysisRunId;
     try {
-      const analysis = await computeTrackAnalysis(track, runId, () => runId !== backgroundAnalysisRunId);
-      if (runId !== backgroundAnalysisRunId) return;
+      const analysis = await computeTrackAnalysis(track, bgRunId, () => bgRunId !== backgroundAnalysisRunId);
+      if (bgRunId !== backgroundAnalysisRunId) return;
       if (analysis) {
         track.analysis = analysis;
         persistTrack(track);
@@ -934,15 +1406,19 @@ window.setReference = async function(index) {
 
   applyLoudnessMatchGain();
   updateDeltas();
+  updateSongScoreUi();
 };
 
 // Play track
 window.playTrack = function(index) {
   initAudio();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
 
   currentIndex = index;
   const track = tracks[index];
+  if (!track) return;
 
   // Revoke old URL if exists
   if (audio.src && audio.src.startsWith('blob:')) {
@@ -954,9 +1430,13 @@ window.playTrack = function(index) {
     console.error('Playback error:', err);
     alert('Could not play audio. Please try again.');
   });
+
   renderPlaylist();
+  updateReanalyzeButtonState();
 
   applyLoudnessMatchGain();
+  updateDeltas();
+  updateSongScoreUi();
 
   if (!track.analysis) {
     const runId = ++analysisRunId;
@@ -968,6 +1448,7 @@ window.playTrack = function(index) {
     status.className = 'status ready';
     displayAnalysis(track.analysis);
     applyLoudnessMatchGain();
+    updateSongScoreUi();
   }
 };
 
@@ -1246,61 +1727,131 @@ async function analyzeTrack(track, runId) {
 
 // Detect key
 function detectKey(chroma) {
-  const normalize = (arr) => {
-    const mag = Math.sqrt(arr.reduce((s, v) => s + v * v, 0));
-    return mag > 0 ? arr.map(v => v / mag) : arr;
+  const standardize = (arr) => {
+    const mean = arr.reduce((s, v) => s + v, 0) / Math.max(1, arr.length);
+    const centered = arr.map(v => v - mean);
+    const mag = Math.sqrt(centered.reduce((s, v) => s + v * v, 0));
+    return mag > 0 ? centered.map(v => v / mag) : centered;
+  };
+
+  const normalizeSum = (arr) => {
+    const safe = arr.map(v => (Number.isFinite(v) && v > 0 ? v : 0));
+    const sum = safe.reduce((s, v) => s + v, 0);
+    return sum > 0 ? safe.map(v => v / sum) : safe;
   };
 
   const rotate = (arr, n) => {
+    const offset = ((n % 12) + 12) % 12;
+    // Rotate so that template[0] (tonic) aligns with chroma[offset].
+    // i.e., for key=E (offset=4), rotated[4] = template[0].
+    const cut = (12 - offset) % 12;
+    return arr.slice(cut).concat(arr.slice(0, cut));
+  };
+
+  const rotateLeft = (arr, n) => {
     const offset = ((n % 12) + 12) % 12;
     return arr.slice(offset).concat(arr.slice(0, offset));
   };
 
   const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 
-  const buildScaleTemplate = (intervals) => {
-    // Simple non-negative template: emphasize tonic, keep non-scale tones low.
-    // Normalization (below) makes templates comparable.
-    const inScale = 1.0;
-    const outScale = 0.18;
-    const tonicBoost = 1.25;
-    const template = new Array(12).fill(outScale);
-    for (const step of intervals) {
-      template[((step % 12) + 12) % 12] = inScale;
+  const MAJOR_SCALE_INTERVALS = [0, 2, 4, 5, 7, 9, 11];
+  const MINOR_SCALE_INTERVALS = [0, 2, 3, 5, 7, 8, 10];
+  const MAJOR_DEGREE_WEIGHTS = MAJOR_SCALE_INTERVALS.map(i => MAJOR[i]);
+  const MINOR_DEGREE_WEIGHTS = MINOR_SCALE_INTERVALS.map(i => MINOR[i]);
+
+  const buildModeProfile = (intervals, degreeWeights) => {
+    // Weighted diatonic template: tonic/dominant are naturally emphasized by degreeWeights.
+    // Keep non-scale tones low but non-zero to penalize chroma energy outside the mode.
+    const safeWeights = Array.isArray(degreeWeights) && degreeWeights.length === intervals.length
+      ? degreeWeights
+      : new Array(intervals.length).fill(1);
+    const minInScale = Math.min(...safeWeights);
+    const outScale = Number.isFinite(minInScale) ? Math.max(0, minInScale * 0.18) : 0.18;
+    const profile = new Array(12).fill(outScale);
+    for (let idx = 0; idx < intervals.length; idx++) {
+      const step = ((intervals[idx] % 12) + 12) % 12;
+      profile[step] = safeWeights[idx];
     }
-    template[0] = Math.max(template[0], tonicBoost);
-    return template;
+    return profile;
   };
 
   const SCALE_TEMPLATES = [
     // Existing Krumhansl-style profiles for major/minor.
-    { name: 'major', profile: MAJOR },
-    { name: 'minor', profile: MINOR },
+    { name: 'major', profile: MAJOR, intervals: MAJOR_SCALE_INTERVALS },
+    { name: 'minor', profile: MINOR, intervals: MINOR_SCALE_INTERVALS },
     // Common diatonic modes (intervals from tonic).
-    { name: 'dorian', profile: buildScaleTemplate([0, 2, 3, 5, 7, 9, 10]) },
-    { name: 'phrygian', profile: buildScaleTemplate([0, 1, 3, 5, 7, 8, 10]) },
-    { name: 'lydian', profile: buildScaleTemplate([0, 2, 4, 6, 7, 9, 11]) },
-    { name: 'mixolydian', profile: buildScaleTemplate([0, 2, 4, 5, 7, 9, 10]) },
-    { name: 'locrian', profile: buildScaleTemplate([0, 1, 3, 5, 6, 8, 10]) }
+    { name: 'dorian', intervals: [0, 2, 3, 5, 7, 9, 10], profile: buildModeProfile([0, 2, 3, 5, 7, 9, 10], MINOR_DEGREE_WEIGHTS) },
+    { name: 'phrygian', intervals: [0, 1, 3, 5, 7, 8, 10], profile: buildModeProfile([0, 1, 3, 5, 7, 8, 10], MINOR_DEGREE_WEIGHTS) },
+    { name: 'lydian', intervals: [0, 2, 4, 6, 7, 9, 11], profile: buildModeProfile([0, 2, 4, 6, 7, 9, 11], MAJOR_DEGREE_WEIGHTS) },
+    { name: 'mixolydian', intervals: [0, 2, 4, 5, 7, 9, 10], profile: buildModeProfile([0, 2, 4, 5, 7, 9, 10], MAJOR_DEGREE_WEIGHTS) },
+    { name: 'locrian', intervals: [0, 1, 3, 5, 6, 8, 10], profile: buildModeProfile([0, 1, 3, 5, 6, 8, 10], MINOR_DEGREE_WEIGHTS) }
   ];
 
-  const normChroma = normalize(chroma);
-  let best = { score: -Infinity, name: null, scale: null };
+  const evaluate = (inputChroma) => {
+    const normChroma = standardize(inputChroma);
+    const sumChroma = normalizeSum(inputChroma);
+    let best = { score: -Infinity, name: null, scale: null };
+    let secondBest = { score: -Infinity };
 
-  for (let i = 0; i < 12; i++) {
-    for (const template of SCALE_TEMPLATES) {
-      const normTemplate = normalize(template.profile);
-      const score = dot(normChroma, rotate(normTemplate, i));
-      if (score > best.score) {
-        best = { score, name: KEY_NAMES[i], scale: template.name };
+    const membershipScoreFor = (tonicIndex, intervals) => {
+    if (!Array.isArray(intervals) || intervals.length === 0) return 0;
+    const tonicEnergy = sumChroma[tonicIndex] || 0;
+    let inEnergy = 0;
+    for (const step of intervals) {
+      const idx = (tonicIndex + step + 1200) % 12;
+      inEnergy += sumChroma[idx] || 0;
+    }
+    const outEnergy = 1 - inEnergy;
+    // Bias toward a strong tonic to distinguish modes that share pitch sets
+    // (e.g., E Phrygian vs C Major).
+    const tonicBoost = 0.35;
+    const outPenalty = 0.55;
+    return inEnergy - outPenalty * outEnergy + tonicBoost * tonicEnergy;
+    };
+
+    for (let i = 0; i < 12; i++) {
+      for (const template of SCALE_TEMPLATES) {
+        const normTemplate = standardize(template.profile);
+        const corrScore = dot(normChroma, rotate(normTemplate, i));
+        const membership = membershipScoreFor(i, template.intervals);
+        const score = corrScore + 0.75 * membership;
+        if (score > best.score) {
+          secondBest = best;
+          best = { score, name: KEY_NAMES[i], scale: template.name };
+        } else if (score > secondBest.score) {
+          secondBest = { score };
+        }
       }
+    }
+
+    const separation = best.score - secondBest.score;
+    const confidence = clamp(separation / 0.25, 0, 1);
+    return { best, confidence };
+  };
+
+  // Some chroma extractors differ in bin ordering (e.g., starting at A instead of C).
+  // Try all rotations and pick the most confident overall interpretation.
+  let chosen = null;
+  for (let shift = 0; shift < 12; shift++) {
+    const rotated = rotateLeft(chroma, shift);
+    const result = evaluate(rotated);
+    if (!chosen) {
+      chosen = { shift, ...result };
+      continue;
+    }
+    // Prefer higher confidence; break ties on score.
+    const chosenObj = chosen.best.score + chosen.confidence * 0.2;
+    const candidateObj = result.best.score + result.confidence * 0.2;
+    if (candidateObj > chosenObj + (shift === 0 ? 0 : 0.005)) {
+      chosen = { shift, ...result };
     }
   }
 
   return {
-    name: best.name,
-    scale: best.scale,
-    confidence: Math.max(0, Math.min(1, best.score))
+    name: chosen?.best?.name || null,
+    scale: chosen?.best?.scale || null,
+    confidence: chosen?.confidence ?? 0
   };
 }
 
@@ -1343,6 +1894,7 @@ function displayAnalysis(analysis) {
   updateReferenceUi();
   updateDeltas();
   applyLoudnessMatchGain();
+  updateSongScoreUi();
 }
 
 // Reset analysis
@@ -1365,6 +1917,7 @@ function resetAnalysis() {
   brightnessSummaryEl.textContent = '--';
   tonalSummaryEl.textContent = '--';
   dynamicsSummaryEl.textContent = '--';
+  resetSongScoreUi();
 }
 
 // Visualization helpers
@@ -1500,6 +2053,16 @@ function syncMeterHeight() {
     }
     return;
   }
+
+  // Important: only sync the meter stack to the canvas height.
+  // Forcing the left column height can create a flexbox feedback loop where
+  // the measured height increases slightly on each call (e.g., when analysis refresh
+  // triggers reflows), making meters “grow” over time.
+  if (leftColumn) {
+    leftColumn.style.height = 'auto';
+    leftColumn.style.maxHeight = 'none';
+  }
+
   const rect = canvasStack.getBoundingClientRect();
   if (rect.height > 0) {
     const setHeight = (el, targetHeight) => {
@@ -1517,7 +2080,6 @@ function syncMeterHeight() {
     };
 
     setHeight(meterStack, rect.height);
-    setHeight(leftColumn, rect.height);
   }
 }
 
